@@ -33,18 +33,27 @@ app.post("/api/summarize", async (req, res) => {
         {
           role: "system",
           content:
-            "You are Readify AI. Summarize study material clearly for students. Make the summary helpful, explanatory, and easy to revise from."
+            "You are Readify AI. Help students understand content quickly."
         },
         {
           role: "user",
           content:
-            `Summarize this PDF page like a study note.\n\n` +
-            `Use this structure:\n` +
-            `1. Short overview\n` +
-            `2. Key points\n` +
-            `3. Important terms\n` +
-            `4. What the student should remember\n\n` +
-            `Text:\n${text}`
+            `Summarize this study material for quick revision.
+
+Rules:
+- Keep it SHORT and easy to read
+- Use bullet points
+- Max 6–8 lines
+- No long paragraphs
+- Focus only on important ideas
+
+Format:
+• Key idea 1  
+• Key idea 2  
+• Key idea 3  
+
+Text:
+${text}`
         }
       ]
     });
@@ -52,10 +61,11 @@ app.post("/api/summarize", async (req, res) => {
     const summary = response.output_text || "No summary returned.";
 
     return res.json({ summary });
+
   } catch (error) {
-    console.error("summarize error:", error);
+    console.error(error);
     return res.status(500).json({
-      summary: "AI summary failed. Please try again."
+      summary: "AI summary failed"
     });
   }
 });
