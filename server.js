@@ -70,6 +70,31 @@ ${text}`
   }
 });
 
+app.post("/api/tts", async (req, res) => {
+  try {
+    const { text, voice } = req.body;
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: "Text is required." });
+    }
+
+    const audio = await openai.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice: voice || "alloy",
+      input: text.substring(0, 4000),
+      instructions: "Speak clearly and naturally like a helpful study tutor."
+    });
+
+    const buffer = Buffer.from(await audio.arrayBuffer());
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.send(buffer);
+  } catch (error) {
+    console.error("tts error:", error);
+    res.status(500).json({ error: "AI voice generation failed." });
+  }
+});
+
 app.use("/api", quizRoutes);
 
 const PORT = process.env.PORT || 3000;
