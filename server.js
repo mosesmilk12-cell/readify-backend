@@ -10,9 +10,8 @@ const multer = require("multer");
 const libre = require("libreoffice-convert");
 const fs = require("fs");
 const path = require("path");
-const util = require("util");
+const { exec } = require("child_process");
 
-const libreConvert = util.promisify(libre.convert);
 const upload = multer({ dest: "uploads/" });
 
 const express = require("express");
@@ -52,7 +51,7 @@ app.post("/api/summarize", async (req, res) => {
 Rules:
 - Keep it SHORT and easy to read
 - Use bullet points
-- Max 6–8 lines
+- Max 6–10 lines
 - No long paragraphs
 - Focus only on important ideas
 
@@ -146,7 +145,7 @@ app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
 
     const fileBuffer = fs.readFileSync(inputPath);
 
-    const pdfBuffer = await libreConvert(fileBuffer, ".pdf", undefined);
+    const pdfBuffer = await libre.convert(fileBuffer, ".pdf", undefined);
 
     fs.unlinkSync(inputPath);
 
@@ -167,6 +166,23 @@ app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
       error: "Document conversion failed."
     });
   }
+});
+
+app.get("/api/check-libreoffice", (req, res) => {
+  exec("which soffice && soffice --version", (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({
+        ok: false,
+        error: error.message,
+        stderr
+      });
+    }
+
+    res.json({
+      ok: true,
+      output: stdout
+    });
+  });
 });
 
 app.use("/api", quizRoutes);
