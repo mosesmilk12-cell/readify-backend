@@ -169,7 +169,12 @@ app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
 });
 
 app.get("/api/check-libreoffice", (req, res) => {
-  exec("which soffice && soffice --version", (error, stdout, stderr) => {
+  const isWindows = process.platform === "win32";
+  const command = isWindows 
+    ? "where soffice && soffice --version" 
+    : "which soffice && soffice --version";
+  
+  exec(command, (error, stdout, stderr) => {
     if (error) {
       return res.status(500).json({
         ok: false,
