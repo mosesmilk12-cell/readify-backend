@@ -6,6 +6,15 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
+const multer = require("multer");
+const libre = require("libreoffice-convert");
+const fs = require("fs");
+const path = require("path");
+const util = require("util");
+
+const libreConvert = util.promisify(libre.convert);
+const upload = multer({ dest: "uploads/" });
+
 const express = require("express");
 const cors = require("cors");
 const quizRoutes = require("./routes/quiz");
@@ -117,6 +126,46 @@ app.post("/api/tts", async (req, res) => {
   } catch (error) {
     console.error("tts error:", error);
     res.status(500).json({ error: "AI voice generation failed." });
+  }
+});
+
+app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No document uploaded." });
+    }
+
+    const inputPath = req.file.path;
+    const originalName = req.file.originalname || "document.docx";
+    const ext = path.extname(originalName).toLowerCase();
+
+    if (ext !== ".doc" && ext !== ".docx") {
+      fs.unlinkSync(inputPath);
+      return res.status(400).json({ error: "Only DOC and DOCX files are allowed." });
+    }
+
+    const fileBuffer = fs.readFileSync(inputPath);
+
+    const pdfBuffer = await libreConvert(fileBuffer, ".pdf", undefined);
+
+    fs.unlinkSync(inputPath);
+
+    const pdfName = originalName.replace(/\.(doc|docx)$/i, ".pdf");
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${pdfName}"`);
+    return res.send(pdfBuffer);
+
+  } catch (error) {
+    console.error("DOC to PDF conversion failed:", error);
+
+    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    return res.status(500).json({
+      error: "Document conversion failed."
+    });
   }
 });
 
