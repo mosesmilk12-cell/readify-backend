@@ -190,6 +190,28 @@ app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
   }
 });
 
+app.get("/api/check-libreoffice", (req, res) => {
+  const isWindows = process.platform === "win32";
+  const command = isWindows 
+    ? "where soffice && soffice --version" 
+    : "which soffice && soffice --version";
+  
+  exec(command, (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({
+        ok: false,
+        error: error.message,
+        stderr
+      });
+    }
+
+    res.json({
+      ok: true,
+      output: stdout
+    });
+  });
+});
+
 app.use("/api", quizRoutes);
 
 const PORT = process.env.PORT || 3000;
