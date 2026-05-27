@@ -7,9 +7,15 @@ const openai = new OpenAI({
 });
 
 const multer = require("multer");
-const libre = require("libreoffice-convert");
 const fs = require("fs");
 const path = require("path");
+
+const ConvertAPI = require("convertapi");
+
+const convertapi = new ConvertAPI(process.env.CONVERTAPI_SECRET);
+const upload = multer({ dest: "uploads/" });
+
+
 const { exec } = require("child_process");
 
 const upload = multer({ dest: "uploads/" });
@@ -129,12 +135,19 @@ app.post("/api/tts", async (req, res) => {
 });
 
 app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
+  let inputPath = null;
+
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No document uploaded." });
     }
 
-    const inputPath = req.file.path;
+    if (!process.env.CONVERTAPI_SECRET) {
+      return res.status(500).json({ error: "Conversion service is not configured." });
+    }
+
+    inputPath = req.file.path;
+
     const originalName = req.file.originalname || "document.docx";
     const ext = path.extname(originalName).toLowerCase();
 
@@ -143,9 +156,18 @@ app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Only DOC and DOCX files are allowed." });
     }
 
-    const fileBuffer = fs.readFileSync(inputPath);
+    const fromFormat = ext === ".doc" ? "doc" : "docx";
 
-    const pdfBuffer = await libre.convert(fileBuffer, ".pdf", undefined);
+    const result = await convertapi.convert(
+      "pdf",
+      {
+        File: inputPath
+      },
+      fromFormat
+    );
+
+    const pdfFile = result.files[0];
+    const pdfBuffer = await pdfFile.getBuffer();
 
     fs.unlinkSync(inputPath);
 
@@ -156,38 +178,16 @@ app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
     return res.send(pdfBuffer);
 
   } catch (error) {
-    console.error("DOC to PDF conversion failed:", error);
+    console.error("ConvertAPI DOC/DOCX to PDF failed:", error);
 
-    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
+    if (inputPath && fs.existsSync(inputPath)) {
+      fs.unlinkSync(inputPath);
     }
 
     return res.status(500).json({
       error: "Document conversion failed."
     });
   }
-});
-
-app.get("/api/check-libreoffice", (req, res) => {
-  const isWindows = process.platform === "win32";
-  const command = isWindows 
-    ? "where soffice && soffice --version" 
-    : "which soffice && soffice --version";
-  
-  exec(command, (error, stdout, stderr) => {
-    if (error) {
-      return res.status(500).json({
-        ok: false,
-        error: error.message,
-        stderr
-      });
-    }
-
-    res.json({
-      ok: true,
-      output: stdout
-    });
-  });
 });
 
 app.use("/api", quizRoutes);
