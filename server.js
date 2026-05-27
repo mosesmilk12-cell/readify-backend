@@ -1,26 +1,18 @@
 require("dotenv").config();
 
 const OpenAI = require("openai");
+const express = require("express");
+const cors = require("cors");
+const { exec } = require("child_process");
+
+const quizRoutes = require("./routes/quiz");
+const convertRoutes = require("./routes/convert");
+
+const app = express();
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
-
-const multer = require("multer");
-const fs = require("fs");
-const path = require("path");
-const { exec } = require("child_process");
-
-const ConvertAPI = require("convertapi");
-
-const convertapi = new ConvertAPI(process.env.CONVERTAPI_SECRET);
-const upload = multer({ dest: "uploads/" });
-
-const express = require("express");
-const cors = require("cors");
-const quizRoutes = require("./routes/quiz");
-
-const app = express();
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -42,13 +34,11 @@ app.post("/api/summarize", async (req, res) => {
       input: [
         {
           role: "system",
-          content:
-            "You are Readify AI. Help students understand content quickly."
+          content: "You are Readify AI. Help students understand content quickly."
         },
         {
           role: "user",
-          content:
-            `Summarize this study material for quick revision.
+          content: `Summarize this study material for quick revision.
 
 Rules:
 - Keep it SHORT and easy to read
@@ -124,74 +114,26 @@ app.post("/api/tts", async (req, res) => {
 
     res.setHeader("Content-Type", "audio/mpeg");
     res.send(buffer);
+
   } catch (error) {
     console.error("tts error:", error);
     res.status(500).json({ error: "AI voice generation failed." });
   }
 });
 
-app.post("/api/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
-  let inputPath = null;
-
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No document uploaded." });
-    }
-
-    if (!process.env.CONVERTAPI_SECRET) {
-      return res.status(500).json({ error: "Conversion service is not configured." });
-    }
-
-    inputPath = req.file.path;
-
-    const originalName = req.file.originalname || "document.docx";
-    const ext = path.extname(originalName).toLowerCase();
-
-    if (ext !== ".doc" && ext !== ".docx") {
-      fs.unlinkSync(inputPath);
-      return res.status(400).json({ error: "Only DOC and DOCX files are allowed." });
-    }
-
-    const fromFormat = ext === ".doc" ? "doc" : "docx";
-
-    const result = await convertapi.convert(
-      "pdf",
-      {
-        File: inputPath
-      },
-      fromFormat
-    );
-
-    const pdfFile = result.files[0];
-    const pdfBuffer = await pdfFile.getBuffer();
-
-    fs.unlinkSync(inputPath);
-
-    const pdfName = originalName.replace(/\.(doc|docx)$/i, ".pdf");
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${pdfName}"`);
-    return res.send(pdfBuffer);
-
-  } catch (error) {
-    console.error("ConvertAPI DOC/DOCX to PDF failed:", error);
-
-    if (inputPath && fs.existsSync(inputPath)) {
-      fs.unlinkSync(inputPath);
-    }
-
-    return res.status(500).json({
-      error: "Document conversion failed."
-    });
-  }
-});
+/**
+ * PDF conversion route
+ * Mounted from routes/convert.js:
+ * POST /api/convert-doc-to-pdf
+ */
+app.use("/api", convertRoutes);
 
 app.get("/api/check-libreoffice", (req, res) => {
   const isWindows = process.platform === "win32";
-  const command = isWindows 
-    ? "where soffice && soffice --version" 
+  const command = isWindows
+    ? "where soffice && soffice --version"
     : "which soffice && soffice --version";
-  
+
   exec(command, (error, stdout, stderr) => {
     if (error) {
       return res.status(500).json({
