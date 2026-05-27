@@ -212,6 +212,9 @@ app.get("/api/check-libreoffice", (req, res) => {
   });
 });
 
+const convertRoutes = require("./routes/convert");
+app.use("/api", convertRoutes);
+
 app.use("/api", quizRoutes);
 
 const PORT = process.env.PORT || 3000;
