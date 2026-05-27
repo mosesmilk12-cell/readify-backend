@@ -9,15 +9,11 @@ const openai = new OpenAI({
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
+const { exec } = require("child_process");
 
 const ConvertAPI = require("convertapi");
 
 const convertapi = new ConvertAPI(process.env.CONVERTAPI_SECRET);
-const upload = multer({ dest: "uploads/" });
-
-
-const { exec } = require("child_process");
-
 const upload = multer({ dest: "uploads/" });
 
 const express = require("express");
@@ -211,9 +207,6 @@ app.get("/api/check-libreoffice", (req, res) => {
     });
   });
 });
-
-const convertRoutes = require("./routes/convert");
-app.use("/api", convertRoutes);
 
 app.use("/api", quizRoutes);
 
