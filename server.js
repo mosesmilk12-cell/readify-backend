@@ -78,28 +78,38 @@ app.post("/api/tts", async (req, res) => {
       return res.status(400).json({ error: "Text is required." });
     }
 
-    const styles = {
-      default: {
-        voice: "alloy",
-        instructions: "Speak clearly and naturally like a helpful study tutor."
-      },
-      male: {
-        voice: "onyx",
-        instructions: "Use a confident, calm male study tutor voice."
-      },
-      female: {
-        voice: "nova",
-        instructions: "Use a warm, clear female study tutor voice."
-      },
-      calm: {
-        voice: "shimmer",
-        instructions: "Use a slow, calm, relaxing study voice."
-      },
-      energetic: {
-        voice: "verse",
-        instructions: "Use an energetic revision voice that keeps students engaged."
-      }
-    };
+const styles = {
+  default: {
+    voice: "alloy",
+    instructions: "Speak clearly and naturally like a helpful study tutor."
+  },
+
+  male: {
+    voice: "onyx",
+    instructions: "Use a confident, calm male study tutor voice."
+  },
+
+  female: {
+    voice: "nova",
+    instructions: "Use a warm, clear female study tutor voice."
+  },
+
+  calm: {
+    voice: "shimmer",
+    instructions: "Use a slow, calm, relaxing study voice."
+  },
+
+  energetic: {
+    voice: "verse",
+    instructions: "Use an energetic revision voice that keeps students engaged."
+  },
+
+  nigerian: {
+    voice: "nova",
+    instructions:
+      "Speak in clear Nigerian English pronunciation. Sound natural, educated, friendly, and easy for Nigerian students to understand. Maintain standard English grammar."
+  }
+};
 
     const selected = styles[voiceStyle] || styles.default;
 
