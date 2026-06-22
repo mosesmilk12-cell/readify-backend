@@ -28,13 +28,18 @@ ${sourceText}
 
   if (questionType === "SHORT_ANSWER") {
     return `
-You are generating a Short Answer quiz pack for a study app.
+You are generating Fill-in-the-Blank quiz questions for a study app.
 
 Use ONLY the provided study material.
-Create exactly ${questionCount} short-answer questions.
+Create exactly ${questionCount} fill-in-the-blank questions.
 Difficulty: ${difficulty}.
-Each question needs a concise "modelAnswer" (1-2 sentences) that a student
-could compare their own answer against.
+Each "question" must be a complete sentence taken from or closely based on
+the study material, with exactly ONE key word or short phrase replaced by
+a blank written as "_____" (five underscores).
+The "modelAnswer" must be ONLY the single word or short phrase that fills
+that blank - never a full sentence, and never more than a few words.
+Pick a word or phrase that is central to the sentence's meaning (a key
+term, name, number, or concept) - never a trivial word like "the" or "and".
 Return short, clear explanations.
 Do not invent facts not found in the material.
 
