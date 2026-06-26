@@ -123,7 +123,7 @@ function verifyWithPaystack(reference) {
 
 function expectedAmount(plan) {
   switch (plan) {
-    case "online":  return 49_900;
+    case "online":  return 70_000;
     case "monthly": return 120_000;
     case "annual":  return 1_137_600;
     default:        return Infinity;

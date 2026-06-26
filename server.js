@@ -103,12 +103,6 @@ const styles = {
   energetic: {
     voice: "verse",
     instructions: "Use an energetic revision voice that keeps students engaged."
-  },
-
-  nigerian: {
-    voice: "nova",
-    instructions:
-      "Speak in clear Nigerian English pronunciation. Sound natural, educated, friendly, and easy for Nigerian students to understand. Maintain standard English grammar."
   }
 };
 
