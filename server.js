@@ -8,6 +8,7 @@ const { exec } = require("child_process");
 const quizRoutes = require("./routes/quiz");
 const convertRoutes = require("./routes/convert");
 const subscriptionRoutes = require("./routes/subscription");
+const tutorRoutes = require("./routes/tutor");
 
 const app = express();
 
@@ -157,6 +158,7 @@ app.get("/api/check-libreoffice", (req, res) => {
 
 app.use("/api", quizRoutes);
 app.use("/api", subscriptionRoutes);
+app.use("/api", tutorRoutes);
 
 const PORT = process.env.PORT || 3000;
 
