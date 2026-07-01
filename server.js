@@ -4,6 +4,24 @@ const express = require("express");
 const cors    = require("cors");
 const { exec } = require("child_process");
 
+// ── Startup environment check ──────────────────────────────────────
+// Logs clearly in Render so you can see immediately what's missing
+const required = ["OPENAI_API_KEY"];
+const optional = ["REDIS_URL", "GOOGLE_SERVICE_ACCOUNT_JSON", "MONNIFY_SECRET_KEY"];
+
+console.log("\n=== Readify Backend Startup ===");
+required.forEach(k => {
+  if (!process.env[k]) {
+    console.error(`❌ MISSING REQUIRED ENV VAR: ${k} — AI features will FAIL without this`);
+  } else {
+    console.log(`✅ ${k} is set`);
+  }
+});
+optional.forEach(k => {
+  console.log(`${process.env[k] ? "✅" : "⚠️ "} ${k}: ${process.env[k] ? "set" : "not set (optional)"}`);
+});
+console.log("================================\n");
+
 // ── Routes ──────────────────────────────────────────────────────
 const summarizeRoutes    = require("./routes/summarize");
 const ttsRoutes          = require("./routes/tts");
