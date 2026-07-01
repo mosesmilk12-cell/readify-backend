@@ -36,9 +36,9 @@ router.post("/convert-doc-to-pdf", upload.single("file"), async (req, res) => {
     const originalName = req.file.originalname || "document.docx";
     const ext = path.extname(originalName).replace(".", "").toLowerCase();
 
-    if (!["doc", "docx", "txt", "html"].includes(ext)) {
+    if (!["doc", "docx", "pptx", "txt", "html"].includes(ext)) {
       return res.status(400).json({
-        error: "Unsupported file type. Only DOC, DOCX, TXT, and HTML are allowed."
+        error: "Unsupported file type. Only DOC, DOCX, PPTX, TXT, and HTML are allowed."
       });
     }
 
