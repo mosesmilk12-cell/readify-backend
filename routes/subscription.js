@@ -42,6 +42,77 @@ const TIER_MAP = {
     annual:  "PREMIUM",
 };
 
+/**
+ * POST /api/init-payment
+ *
+ * Creates a Monnify checkout session and returns the hosted payment URL.
+ * The Android app opens this URL in a WebView — no Monnify Android SDK needed.
+ *
+ * Body: { plan: "lite"|"monthly"|"annual", uid: "firebaseUid",
+ *         email: "user@email.com", name: "User Name" }
+ */
+router.post("/init-payment", async (req, res) => {
+    const { plan, uid, email, name } = req.body;
+
+    if (!plan || !uid || !email) {
+        return res.status(400).json({ success: false, error: "plan, uid and email are required." });
+    }
+
+    const amount = EXPECTED_AMOUNTS[plan];
+    if (!amount) {
+        return res.status(400).json({ success: false, error: `Unknown plan: ${plan}` });
+    }
+
+    const reference = `RDFY-${plan.toUpperCase()}-${Date.now()}-${Math.random().toString(36).substr(2,6).toUpperCase()}`;
+
+    try {
+        const credentials = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString("base64");
+
+        const body = JSON.stringify({
+            amount,
+            currencyCode: "NGN",
+            customerName: name || "Readify User",
+            customerEmail: email,
+            paymentReference: reference,
+            paymentDescription: `Readify ${plan} subscription`,
+            contractCode: "0148083898",
+            redirectUrl: `https://readify-backend-1.onrender.com/api/payment-callback`,
+            paymentMethods: ["CARD", "ACCOUNT_TRANSFER", "USSD", "DIRECT_DEBIT"],
+        });
+
+        const result = await monnifyPost("/api/v1/merchant/transactions/init-transaction", body, credentials);
+
+        if (!result || result.requestSuccessful !== true) {
+            throw new Error(result?.responseMessage || "Monnify init failed");
+        }
+
+        return res.json({
+            success: true,
+            checkoutUrl: result.responseBody.checkoutUrl,
+            transactionReference: result.responseBody.transactionReference,
+            paymentReference: reference,
+        });
+
+    } catch (err) {
+        console.error("[init-payment]", err.message);
+        return res.status(500).json({ success: false, error: "Could not create payment session." });
+    }
+});
+
+/**
+ * GET /api/payment-callback
+ * Monnify redirects here after payment. The WebView intercepts this URL
+ * and the app extracts the transaction reference to verify.
+ */
+router.get("/payment-callback", (req, res) => {
+    const { paymentReference, transactionReference, paymentStatus } = req.query;
+    // Return a minimal page — the WebView intercepts this URL before the user sees it
+    res.send(`<!DOCTYPE html><html><body>
+        <p>Processing payment…</p>
+        <script>window.location.href = 'readifypro://payment?ref=${encodeURIComponent(transactionReference || paymentReference || "")}&status=${paymentStatus || ""}';
+        </script></body></html>`);
+});
+
 router.post("/verify-payment", async (req, res) => {
     const { reference, plan, uid } = req.body;
 
@@ -121,7 +192,34 @@ router.post("/verify-payment", async (req, res) => {
     }
 });
 
-// ── Monnify REST API helper ───────────────────────────────────────────
+// ── Monnify REST API helpers ──────────────────────────────────────────
+
+function monnifyPost(path, body, credentials) {
+    return new Promise((resolve, reject) => {
+        const options = {
+            hostname: MONNIFY_BASE_URL,
+            path,
+            method: "POST",
+            headers: {
+                "Authorization": `Basic ${credentials}`,
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(body),
+            },
+        };
+        const req = https.request(options, (res) => {
+            let data = "";
+            res.on("data", c => data += c);
+            res.on("end", () => {
+                try { resolve(JSON.parse(data)); }
+                catch (e) { reject(new Error("Invalid JSON from Monnify")); }
+            });
+        });
+        req.on("error", reject);
+        req.setTimeout(10000, () => reject(new Error("Monnify request timed out")));
+        req.write(body);
+        req.end();
+    });
+}
 
 function verifyMonnifyTransaction(reference) {
     return new Promise((resolve, reject) => {
