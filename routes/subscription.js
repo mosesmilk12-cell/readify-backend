@@ -1,166 +1,155 @@
 require("dotenv").config();
-const express    = require("express");
-const https      = require("https");
-const router     = express.Router();
-const admin      = require("../config/firebase");
-
-/**
- * POST /api/verify-payment
- *
- * Verifies a Monnify transaction and stamps the subscription in Firestore.
- *
- * Body:
- *   { reference: "RDFY-LITE-XXXXXXXX", plan: "lite" | "monthly" | "annual", uid: "firebaseUid" }
- *
- * Monnify verification:
- *   GET https://sandbox.monnify.com/api/v2/transactions/{encodedReference}
- *   Authorization: Basic base64(apiKey:secretKey)
- *
- * Expected amounts (Naira):
- *   lite    →  700
- *   monthly →  1,200
- *   annual  →  11,376
- */
+const express = require("express");
+const https   = require("https");
+const router  = express.Router();
+const admin   = require("../config/firebase");
 
 const MONNIFY_API_KEY    = process.env.MONNIFY_API_KEY    || "MK_TEST_EBEFAAP7KD";
 const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY || "FM8ZLQQP9QB6EUPE7DZ8X2E2H8SHSS06";
-
-// Use sandbox URL for test mode — switch to https://api.monnify.com for production
-const MONNIFY_BASE_URL = process.env.MONNIFY_ENV === "live"
+const MONNIFY_BASE_URL   = process.env.MONNIFY_ENV === "live"
     ? "api.monnify.com"
     : "sandbox.monnify.com";
+const CONTRACT_CODE      = process.env.MONNIFY_CONTRACT_CODE || "0148083898";
 
-const EXPECTED_AMOUNTS = {
-    lite:    700,
-    monthly: 1200,
-    annual:  11376,
-};
+const EXPECTED_AMOUNTS = { lite: 700, monthly: 1200, annual: 11376 };
+const TIER_MAP         = { lite: "ONLINE", monthly: "PREMIUM", annual: "PREMIUM" };
 
-const TIER_MAP = {
-    lite:    "ONLINE",   // maps to Readify Lite subscription tier
-    monthly: "PREMIUM",
-    annual:  "PREMIUM",
-};
+// ── Step 1: get Monnify access token ────────────────────────────────
+// Monnify uses Basic Auth ONLY on the /auth/login endpoint to get a
+// short-lived Bearer token. All other endpoints require that Bearer token.
+async function getMonnifyToken() {
+    const credentials = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`)
+        .toString("base64");
 
-/**
- * POST /api/init-payment
- *
- * Creates a Monnify checkout session and returns the hosted payment URL.
- * The Android app opens this URL in a WebView — no Monnify Android SDK needed.
- *
- * Body: { plan: "lite"|"monthly"|"annual", uid: "firebaseUid",
- *         email: "user@email.com", name: "User Name" }
- */
+    const data = await monnifyRequest({
+        path:   "/api/v1/auth/login",
+        method: "POST",
+        headers: {
+            "Authorization": `Basic ${credentials}`,
+            "Content-Type": "application/json",
+        },
+        body: null,
+    });
+
+    if (!data || data.requestSuccessful !== true) {
+        const msg = data?.responseMessage || "Monnify auth failed";
+        throw new Error(`Monnify auth error: ${msg}`);
+    }
+    return data.responseBody.accessToken;
+}
+
+// ── POST /api/init-payment ────────────────────────────────────────────
 router.post("/init-payment", async (req, res) => {
     const { plan, uid, email, name } = req.body;
-
-    if (!plan || !uid || !email) {
+    if (!plan || !uid || !email)
         return res.status(400).json({ success: false, error: "plan, uid and email are required." });
-    }
 
     const amount = EXPECTED_AMOUNTS[plan];
-    if (!amount) {
+    if (!amount)
         return res.status(400).json({ success: false, error: `Unknown plan: ${plan}` });
-    }
 
-    const reference = `RDFY-${plan.toUpperCase()}-${Date.now()}-${Math.random().toString(36).substr(2,6).toUpperCase()}`;
+    const reference = `RDFY-${plan.toUpperCase()}-${Date.now()}-${Math.random()
+        .toString(36).substr(2, 6).toUpperCase()}`;
 
     try {
-        const credentials = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString("base64");
+        // Step 1: authenticate
+        const token = await getMonnifyToken();
 
+        // Step 2: initialise transaction with Bearer token
         const body = JSON.stringify({
             amount,
-            currencyCode: "NGN",
-            customerName: name || "Readify User",
-            customerEmail: email,
-            paymentReference: reference,
+            currencyCode:       "NGN",
+            customerName:       name || "Readify User",
+            customerEmail:      email,
+            paymentReference:   reference,
             paymentDescription: `Readify ${plan} subscription`,
-            contractCode: "0148083898",
+            contractCode:       CONTRACT_CODE,
             redirectUrl: `https://readify-backend-1.onrender.com/api/payment-callback`,
-            paymentMethods: ["CARD", "ACCOUNT_TRANSFER", "USSD", "DIRECT_DEBIT"],
+            paymentMethods: ["CARD", "ACCOUNT_TRANSFER", "USSD"],
         });
 
-        const result = await monnifyPost("/api/v1/merchant/transactions/init-transaction", body, credentials);
+        const result = await monnifyRequest({
+            path:   "/api/v1/merchant/transactions/init-transaction",
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${token}`,
+                "Content-Type":  "application/json",
+                "Content-Length": Buffer.byteLength(body),
+            },
+            body,
+        });
 
         if (!result || result.requestSuccessful !== true) {
-            throw new Error(result?.responseMessage || "Monnify init failed");
+            const msg = result?.responseMessage || "Monnify rejected the payment request";
+            console.error("[init-payment] Monnify error:", msg, result);
+            return res.status(502).json({ success: false, error: msg });
         }
 
         return res.json({
-            success: true,
-            checkoutUrl: result.responseBody.checkoutUrl,
+            success:              true,
+            checkoutUrl:          result.responseBody.checkoutUrl,
             transactionReference: result.responseBody.transactionReference,
-            paymentReference: reference,
+            paymentReference:     reference,
         });
 
     } catch (err) {
         console.error("[init-payment]", err.message);
-        return res.status(500).json({ success: false, error: "Could not create payment session." });
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 
-/**
- * GET /api/payment-callback
- * Monnify redirects here after payment. The WebView intercepts this URL
- * and the app extracts the transaction reference to verify.
- */
+// ── GET /api/payment-callback ─────────────────────────────────────────
 router.get("/payment-callback", (req, res) => {
     const { paymentReference, transactionReference, paymentStatus } = req.query;
-    // Return a minimal page — the WebView intercepts this URL before the user sees it
     res.send(`<!DOCTYPE html><html><body>
         <p>Processing payment…</p>
-        <script>window.location.href = 'readifypro://payment?ref=${encodeURIComponent(transactionReference || paymentReference || "")}&status=${paymentStatus || ""}';
-        </script></body></html>`);
+        <script>window.location.href='readifypro://payment?ref=${
+            encodeURIComponent(transactionReference || paymentReference || "")
+        }&status=${paymentStatus || ""}';</script>
+    </body></html>`);
 });
 
+// ── POST /api/verify-payment ──────────────────────────────────────────
 router.post("/verify-payment", async (req, res) => {
     const { reference, plan, uid } = req.body;
-
-    if (!reference || !plan || !uid) {
+    if (!reference || !plan || !uid)
         return res.status(400).json({ success: false, error: "reference, plan and uid are required." });
-    }
 
     const expectedAmount = EXPECTED_AMOUNTS[plan];
-    if (!expectedAmount) {
+    if (!expectedAmount)
         return res.status(400).json({ success: false, error: `Unknown plan: ${plan}` });
-    }
 
     try {
-        // ── 1. Verify with Monnify ────────────────────────────────────
-        const monnifyData = await verifyMonnifyTransaction(reference);
+        // Step 1: authenticate
+        const token = await getMonnifyToken();
 
-        if (!monnifyData || monnifyData.requestSuccessful !== true) {
-            return res.status(400).json({ success: false, error: "Could not reach Monnify to verify this transaction." });
-        }
+        // Step 2: verify transaction
+        const encodedRef = encodeURIComponent(reference);
+        const data = await monnifyRequest({
+            path:   `/api/v2/transactions/${encodedRef}`,
+            method: "GET",
+            headers: { "Authorization": `Bearer ${token}` },
+            body:   null,
+        });
 
-        const txn = monnifyData.responseBody;
+        if (!data || data.requestSuccessful !== true)
+            return res.status(400).json({ success: false, error: "Could not verify transaction with Monnify." });
 
-        // Check payment status
-        if (txn.paymentStatus !== "PAID") {
-            return res.status(400).json({
-                success: false,
-                error: `Payment not completed. Status: ${txn.paymentStatus}`
-            });
-        }
+        const txn = data.responseBody;
+        if (txn.paymentStatus !== "PAID")
+            return res.status(400).json({ success: false, error: `Payment not completed. Status: ${txn.paymentStatus}` });
 
-        // Verify amount paid matches what we expect (allow ±1 Naira for rounding)
         const amountPaid = parseFloat(txn.amountPaid || txn.amount || 0);
         if (Math.abs(amountPaid - expectedAmount) > 1) {
-            console.warn(`Amount mismatch: expected ₦${expectedAmount}, got ₦${amountPaid} for ref ${reference}`);
-            return res.status(400).json({
-                success: false,
-                error: `Amount mismatch: expected ₦${expectedAmount}, received ₦${amountPaid}`
-            });
+            console.warn(`Amount mismatch: expected ₦${expectedAmount}, got ₦${amountPaid}`);
+            return res.status(400).json({ success: false, error: `Amount mismatch: expected ₦${expectedAmount}, received ₦${amountPaid}` });
         }
 
-        // ── 2. Stamp subscription in Firestore ────────────────────────
         const tier     = TIER_MAP[plan];
         const now      = admin.firestore.FieldValue.serverTimestamp();
-        const expiryMs = plan === "annual"
-            ? Date.now() + 365 * 24 * 60 * 60 * 1000
-            : plan === "monthly"
-                ? Date.now() + 30 * 24 * 60 * 60 * 1000
-                : null; // Lite is one-time, no expiry
+        const expiryMs = plan === "annual"  ? Date.now() + 365 * 86_400_000
+                       : plan === "monthly" ? Date.now() +  30 * 86_400_000
+                       : null;
 
         const updateData = {
             subscriptionTier:      tier,
@@ -171,83 +160,32 @@ router.post("/verify-payment", async (req, res) => {
         };
         if (expiryMs) updateData.subscriptionExpiresAt = new Date(expiryMs);
 
-        await admin.firestore()
-            .collection("users")
-            .doc(uid)
-            .set(updateData, { merge: true });
+        await admin.firestore().collection("users").doc(uid).set(updateData, { merge: true });
 
-        console.log(`[Subscription] ${uid} upgraded to ${tier} (${plan}) via Monnify ref ${reference}`);
-
-        return res.json({
-            success: true,
-            tier,
-            plan,
-            amountPaid,
-            expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
-        });
+        console.log(`[Subscription] ${uid} → ${tier} (${plan}) ref=${reference}`);
+        return res.json({ success: true, tier, plan, amountPaid, expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null });
 
     } catch (err) {
-        console.error("[verify-payment] Error:", err.message);
+        console.error("[verify-payment]", err.message);
         return res.status(500).json({ success: false, error: "Payment verification failed. Please contact support." });
     }
 });
 
-// ── Monnify REST API helpers ──────────────────────────────────────────
-
-function monnifyPost(path, body, credentials) {
+// ── Generic Monnify HTTPS request ─────────────────────────────────────
+function monnifyRequest({ path, method, headers, body }) {
     return new Promise((resolve, reject) => {
-        const options = {
-            hostname: MONNIFY_BASE_URL,
-            path,
-            method: "POST",
-            headers: {
-                "Authorization": `Basic ${credentials}`,
-                "Content-Type": "application/json",
-                "Content-Length": Buffer.byteLength(body),
-            },
-        };
+        const options = { hostname: MONNIFY_BASE_URL, path, method, headers };
         const req = https.request(options, (res) => {
-            let data = "";
-            res.on("data", c => data += c);
+            let raw = "";
+            res.on("data", c => raw += c);
             res.on("end", () => {
-                try { resolve(JSON.parse(data)); }
-                catch (e) { reject(new Error("Invalid JSON from Monnify")); }
+                try { resolve(JSON.parse(raw)); }
+                catch (e) { reject(new Error(`Monnify returned invalid JSON: ${raw.substring(0, 200)}`)); }
             });
         });
         req.on("error", reject);
-        req.setTimeout(10000, () => reject(new Error("Monnify request timed out")));
-        req.write(body);
-        req.end();
-    });
-}
-
-function verifyMonnifyTransaction(reference) {
-    return new Promise((resolve, reject) => {
-        const credentials = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString("base64");
-        const encodedRef  = encodeURIComponent(reference);
-        const path        = `/api/v2/transactions/${encodedRef}`;
-
-        const options = {
-            hostname: MONNIFY_BASE_URL,
-            path,
-            method: "GET",
-            headers: {
-                "Authorization": `Basic ${credentials}`,
-                "Content-Type":  "application/json",
-            },
-        };
-
-        const req = https.request(options, (res) => {
-            let body = "";
-            res.on("data", chunk => body += chunk);
-            res.on("end", () => {
-                try { resolve(JSON.parse(body)); }
-                catch (e) { reject(new Error("Invalid JSON from Monnify")); }
-            });
-        });
-
-        req.on("error", reject);
-        req.setTimeout(10000, () => reject(new Error("Monnify verification timed out")));
+        req.setTimeout(15000, () => reject(new Error("Monnify request timed out")));
+        if (body) req.write(body);
         req.end();
     });
 }
