@@ -1,85 +1,111 @@
+const express = require("express");
+const router  = express.Router();
+const openai  = require("../config/openai");
+
+// ── System prompt ─────────────────────────────────────────────────────────────
 const TUTOR_SYSTEM = `You are Readify Tutor — a friendly, expert study assistant for Nigerian students.
- 
+
 RESPONSE STYLE:
-• Be concise and clear. Explain concepts simply.
+• Be concise and clear. Explain concepts in simple English.
 • Use bullet points for lists, numbered steps for processes.
-• Encourage and motivate the student.
- 
+• Encourage the student. Keep energy positive.
+• Keep responses focused — don't pad with unnecessary text.
+
 ILLUSTRATIONS:
-When a visual diagram would genuinely help (e.g. a biological cell, geometric shape, circuit diagram, 
-timeline, bar chart, simple map, flowchart), generate a clean SVG illustration.
-Wrap it EXACTLY like this — no deviations:
- 
+When a visual diagram would genuinely help the student understand (e.g. a biological cell,
+geometric shape, circuit diagram, timeline, bar chart, simple map, or flowchart), generate
+a clean SVG illustration. Wrap it EXACTLY like this — no deviations in tag format:
+
 [SVG]
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 200" width="300" height="200">
-  <!-- your SVG content here -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 220" width="300" height="220">
+  <!-- your SVG elements here -->
 </svg>
 [/SVG]
- 
+
 SVG rules:
-- Keep SVGs simple and educational (no decorative complexity)
-- Use fill colors like #1565C0 (blue), #16A34A (green), #DC2626 (red), #F59E0B (gold)
-- Always include text labels so the diagram explains itself
-- Max size: 300×250. Only generate when genuinely helpful, not for every response.
-- Put the [SVG] block AFTER your text explanation, not before.
- 
-EXAMPLES of when to draw:
-✅ "Explain mitosis" → draw cell division stages
-✅ "What is Pythagoras theorem?" → draw a right triangle with labels  
-✅ "Explain the water cycle" → draw a simple cycle diagram
-✅ "What is a bar chart?" → draw a small example bar chart
-❌ "What year did Nigeria gain independence?" → NO diagram needed
-❌ "Explain supply and demand" (economics concept) → explain in text`;
+- Keep diagrams simple, clean and educational
+- Use these colours: #1565C0 (blue), #16A34A (green), #DC2626 (red), #F59E0B (amber), #7C3AED (purple)
+- Always include text labels so the diagram explains itself without extra description
+- Max dimensions: 300 × 250. Minimum stroke width: 1.5
+- Place the [SVG] block AFTER your text explanation, never before
+- Only generate when it genuinely aids understanding — not for every response
 
+WHEN TO DRAW:
+✅ "Explain mitosis" → cell division stages
+✅ "What is Pythagoras theorem?" → right triangle with labelled sides
+✅ "Explain the water cycle" → simple cycle diagram
+✅ "What is a bar chart?" → small example bar chart
+✅ "Draw a simple circuit" → battery, wire, bulb diagram
+✅ "Explain the layers of the atmosphere" → vertical layer diagram
+❌ "What year did Nigeria gain independence?" → text only
+❌ "Define democracy" → text only`;
 
-/**
- * POST /api/tutor/chat
- *
- * Body: {
- *   messages: [{ role: "user"|"assistant", content: string }],
- *   context?: string   // optional — text from a PDF the user is studying
- * }
- */
-
+// ────────────────────────────────────────────────────────────────────────────
+// POST /api/tutor/chat
+// Body: { messages: [{role, content}], context?: string, illustration_mode?: bool }
+// Returns: { reply: string }
+// ────────────────────────────────────────────────────────────────────────────
 router.post("/tutor/chat", async (req, res) => {
-  try {
-    const { messages, context } = req.body;
+    const {
+        messages         = [],
+        context          = "",
+        illustration_mode = false,
+    } = req.body;
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ error: "messages array is required" });
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return res.status(400).json({ error: "No messages provided." });
     }
 
-    // Build the message list for OpenAI
-    const systemContent = context && context.trim()
-      ? `${TUTOR_SYSTEM}\n\n--- Study Material Context ---\n${context.trim()}\n\nUse the above material to answer questions where relevant.`
-      : TUTOR_SYSTEM;
+    // Build the message array for OpenAI
+    const systemMessages = [];
 
-    const openAiMessages = [
-      { role: "system", content: systemContent },
-      ...messages.slice(-20) // Keep last 20 turns to stay within context window
-    ];
+    // 1. Base system prompt
+    systemMessages.push({
+        role:    "system",
+        content: illustration_mode ? TUTOR_SYSTEM : TUTOR_SYSTEM.split("\nILLUSTRATIONS:")[0].trim(),
+    });
 
-    const completion = await client.chat.completions.create(
-      {
-      model: "gpt-4o-mini",
-      messages: openAiMessages,
-      max_tokens: 600,
-      temperature: 0.7
-    }
-  );
-
-    const reply = completion.choices?.[0]?.message?.content;
-
-    if (!reply) {
-      return res.status(500).json({ error: "No response from AI" });
+    // 2. Optional PDF context injected as a system message
+    if (context && context.trim().length > 0) {
+        systemMessages.push({
+            role: "system",
+            content:
+                "The student is currently reading a document. Here is the relevant excerpt "
+                + "(use it to inform your answers if relevant):\n\n"
+                + context.substring(0, 3000),
+        });
     }
 
-    return res.json({ reply });
+    // Validate and sanitise the conversation history
+    const validRoles     = new Set(["user", "assistant"]);
+    const safeMessages   = messages
+        .filter(m => m && validRoles.has(m.role) && typeof m.content === "string")
+        .slice(-20);  // Keep last 20 turns to stay within token budget
 
-  } catch (err) {
-    console.error("tutor/chat error:", err);
-    return res.status(500).json({ error: "Tutor request failed" });
-  }
+    if (safeMessages.length === 0) {
+        return res.status(400).json({ error: "No valid messages after filtering." });
+    }
+
+    try {
+        const completion = await openai.chat.completions.create({
+            model:       "gpt-4o-mini",
+            max_tokens:  1200,
+            temperature: 0.7,
+            messages: [
+                ...systemMessages,
+                ...safeMessages,
+            ],
+        });
+
+        const reply = completion.choices[0]?.message?.content?.trim() || "";
+        if (!reply) return res.status(500).json({ error: "Empty response from AI." });
+
+        return res.json({ reply });
+
+    } catch (err) {
+        console.error("[tutor/chat]", err.message);
+        return res.status(500).json({ error: "Tutor is unavailable right now. Please try again." });
+    }
 });
 
 module.exports = router;
