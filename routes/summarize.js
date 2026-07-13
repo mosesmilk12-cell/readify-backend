@@ -35,7 +35,7 @@ router.post("/summarize", async (req, res) => {
         { role: "system", content: "You are Readify AI. Help students understand content quickly. Respond with plain bullet points only, no markdown symbols like ** or ##." },
         { role: "user", content: prompt }
       ],
-      max_tokens: 500,
+      max_tokens: req.body.premium === true ? 1200 : 500,
     });
 
     const summary = completion.choices[0]?.message?.content || "No summary returned.";

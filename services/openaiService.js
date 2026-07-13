@@ -64,11 +64,12 @@ ${sourceText}
 `;
 }
 
-async function generateQuizPack({ title, sourceText, questionCount, difficulty, includeExplanations, questionType }) {
+async function generateQuizPack({ title, sourceText, questionCount, difficulty, includeExplanations, questionType, premium }) {
   const resolvedType = questionType || "MULTIPLE_CHOICE";
   const prompt = buildPrompt({ questionType: resolvedType, questionCount, difficulty, sourceText });
 
   const response = await client.chat.completions.create({
+        max_tokens: premium === true ? 3000 : 1800,
     model: "gpt-4o-mini",
     messages: [
       {

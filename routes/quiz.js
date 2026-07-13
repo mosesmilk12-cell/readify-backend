@@ -60,6 +60,7 @@ router.post("/generate-quiz", async (req, res) => {
       difficulty: diff,
       includeExplanations: includeExplanations !== false,
       questionType: resolvedType,
+      premium: req.body.premium === true,
     });
 
     return res.json(result);

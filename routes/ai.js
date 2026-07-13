@@ -18,7 +18,7 @@ router.post("/summarize", async (req, res) => {
     try {
         const completion = await openai.chat.completions.create({
             model:      "gpt-4o-mini",
-            max_tokens: 800,
+            max_tokens: req.body.premium === true ? 1600 : 800,
             messages: [
                 {
                     role: "system",
@@ -105,7 +105,7 @@ router.post("/generate-quiz", async (req, res) => {
     try {
         const completion = await openai.chat.completions.create({
             model:      "gpt-4o-mini",
-            max_tokens: 1500,
+            max_tokens: req.body.premium === true ? 2600 : 1500,
             messages: [
                 {
                     role: "system",

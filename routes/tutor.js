@@ -90,7 +90,7 @@ router.post("/tutor/chat", async (req, res) => {
     try {
         const completion = await openai.chat.completions.create({
             model:       "gpt-4o-mini",
-            max_tokens:  1200,
+            max_tokens:  req.body.premium === true ? 2200 : 1200,
             temperature: 0.7,
             messages: [
                 ...systemMessages,
