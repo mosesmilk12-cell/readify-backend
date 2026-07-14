@@ -1,11 +1,13 @@
 require("dotenv").config();
 const { Worker } = require("bullmq");
 const OpenAI = require("openai");
-const { redisForBullMQ } = require("../config/redis");
+const { getRedisOptions } = require("../config/redis");
 const { setCache, setTTSCache } = require("../config/cache");
 const { schemaForQuestionType } = require("../utils/schema");
 
-if (!redisForBullMQ) {
+const workerConnection = getRedisOptions(null);
+
+if (!workerConnection) {
   console.warn("[Worker] Redis not configured — worker not started.");
   module.exports = null;
   return;
@@ -77,7 +79,7 @@ const worker = new Worker(
 
     throw new Error(`Unknown job type: ${name}`);
   },
-  { connection: redisForBullMQ, concurrency: 5 }
+  { connection: workerConnection, concurrency: 5 }
 );
 
 worker.on("completed", (job) => console.log(`[Worker] ${job.name} ${job.id} done`));

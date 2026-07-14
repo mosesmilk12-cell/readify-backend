@@ -1,5 +1,5 @@
 const { Queue, QueueEvents } = require("bullmq");
-const { redisForBullMQ } = require("./redis");
+const { getRedisOptions } = require("./redis");
 
 /**
  * Single queue for all AI requests.
@@ -20,9 +20,12 @@ const { redisForBullMQ } = require("./redis");
 let aiQueue = null;
 let queueEvents = null;
 
-if (redisForBullMQ) {
+const producerConnection = getRedisOptions(1);
+const eventsConnection = getRedisOptions(null);
+
+if (producerConnection && eventsConnection) {
   aiQueue = new Queue("readify-ai", {
-    connection: redisForBullMQ,
+    connection: producerConnection,
     defaultJobOptions: {
       removeOnComplete: 200,   // keep last 200 completed jobs for debugging
       removeOnFail: 100,
@@ -32,7 +35,7 @@ if (redisForBullMQ) {
   });
 
   queueEvents = new QueueEvents("readify-ai", {
-    connection: { url: redisForBullMQ.url },
+    connection: eventsConnection,
   });
 
   console.log("[Queue] AI queue ready");

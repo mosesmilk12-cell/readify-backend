@@ -12,8 +12,8 @@ const MONNIFY_BASE        = process.env.MONNIFY_ENV === "live"
     ? "api.monnify.com"
     : "sandbox.monnify.com";
 
-const PLAN_AMOUNTS = { lite: 700, monthly: 1200, annual: 11376 };
-const PLAN_TIERS   = { lite: "ONLINE", monthly: "PREMIUM", annual: "PREMIUM" };
+const PLAN_AMOUNTS = { lite: 700, lite_yearly: 1000, monthly: 1200, annual: 11376 };
+const PLAN_TIERS   = { lite: "ONLINE", lite_yearly: "LITE_YEARLY", monthly: "PREMIUM", annual: "PREMIUM" };
 
 // ── Monnify helpers ───────────────────────────────────────────────────────────
 
@@ -206,7 +206,7 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
         // Step 3: upgrade user in Firestore
         const tier     = PLAN_TIERS[plan];
         const now      = admin.firestore.FieldValue.serverTimestamp();
-        const expiryMs = plan === "annual"  ? Date.now() + 365 * 86_400_000
+        const expiryMs = plan === "annual" || plan === "lite_yearly" ? Date.now() + 365 * 86_400_000
                        : plan === "monthly" ? Date.now() +  30 * 86_400_000
                        : null;   // lite is lifetime — no expiry
 
@@ -233,6 +233,7 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
             tier,
             plan,
             amountPaid,
+            premiumExpiryMs: expiryMs || 0,
             expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
         });
 

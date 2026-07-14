@@ -16,8 +16,25 @@ const Redis = require("ioredis");
  */
 
 let redis = null;
-let redisForBullMQ = null;
 let isConnected = false;
+
+function getRedisOptions(maxRetriesPerRequest = null) {
+  const raw = process.env.REDIS_URL;
+  if (!raw) return null;
+  const parsed = new URL(raw);
+  const dbPart = parsed.pathname && parsed.pathname !== "/" ? Number(parsed.pathname.slice(1)) : 0;
+  return {
+    host: parsed.hostname,
+    port: Number(parsed.port) || 6379,
+    username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+    password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+    db: Number.isFinite(dbPart) ? dbPart : 0,
+    tls: parsed.protocol === "rediss:" ? {} : undefined,
+    maxRetriesPerRequest,
+    enableReadyCheck: false,
+    retryStrategy: times => Math.min(times * 500, 3000),
+  };
+}
 
 function createConnection(name) {
   const url = process.env.REDIS_URL;
@@ -54,10 +71,8 @@ function createConnection(name) {
 
 if (process.env.REDIS_URL) {
   redis = createConnection("main");
-  // BullMQ needs a separate connection per role (queue vs worker vs events)
-  redisForBullMQ = { url: process.env.REDIS_URL };
 } else {
   console.warn("[Redis] REDIS_URL not set — caching and queuing disabled.");
 }
 
-module.exports = { redis, redisForBullMQ, get isConnected() { return isConnected; } };
+module.exports = { redis, getRedisOptions, get isConnected() { return isConnected; } };
