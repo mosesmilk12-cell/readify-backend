@@ -11,6 +11,8 @@ const MONNIFY_CONTRACT    = process.env.MONNIFY_CONTRACT_CODE || "0148083898";
 const MONNIFY_BASE        = process.env.MONNIFY_ENV === "live"
     ? "api.monnify.com"
     : "sandbox.monnify.com";
+const PUBLIC_BACKEND_URL  = process.env.PUBLIC_BACKEND_URL || "https://readify-backend-1.onrender.com";
+const WEB_APP_URL         = process.env.WEB_APP_URL || "https://readifypro.com.ng/app.html";
 
 const PLAN_AMOUNTS = { lite: 700, lite_yearly: 1000, monthly: 1200, annual: 11376 };
 const PLAN_TIERS   = { lite: "ONLINE", lite_yearly: "LITE_YEARLY", monthly: "PREMIUM", annual: "PREMIUM" };
@@ -80,6 +82,7 @@ function monnifyRequest({ path, method, headers, body }) {
 // ────────────────────────────────────────────────────────────────────────────
 router.post("/init-payment", requireAuth, async (req, res) => {
     const { plan, uid, email, name } = req.body;
+    const platform = req.body.platform === "web" ? "web" : "android";
 
     if (uid !== req.user.uid || email !== req.user.email) {
         return res.status(403).json({ success: false, error: "Account details do not match the signed-in user." });
@@ -102,6 +105,7 @@ router.post("/init-payment", requireAuth, async (req, res) => {
         const token = await getMonnifyToken();
 
         // Step 2: initialise transaction
+        const callbackQuery = new URLSearchParams({ platform, plan }).toString();
         const body = JSON.stringify({
             amount,
             currencyCode:       "NGN",
@@ -110,7 +114,7 @@ router.post("/init-payment", requireAuth, async (req, res) => {
             paymentReference:   reference,
             paymentDescription: `Readify ${plan} subscription`,
             contractCode:       MONNIFY_CONTRACT,
-            redirectUrl:        "https://readify-backend-1.onrender.com/api/payment-callback",
+            redirectUrl:        `${PUBLIC_BACKEND_URL}/api/payment-callback?${callbackQuery}`,
             paymentMethods:     ["CARD", "ACCOUNT_TRANSFER", "USSD"],
         });
 
@@ -256,10 +260,24 @@ router.get("/payment-callback", (req, res) => {
         paymentReference,
         transactionReference,
         paymentStatus,
+        platform,
+        plan,
     } = req.query;
 
-    const ref    = encodeURIComponent(transactionReference || paymentReference || "");
+    const rawRef = transactionReference || paymentReference || "";
+    const safePlan = Object.prototype.hasOwnProperty.call(PLAN_AMOUNTS, plan) ? plan : "";
     const status = paymentStatus || "";
+
+    if (platform === "web") {
+        const returnUrl = new URL(WEB_APP_URL);
+        if (rawRef) returnUrl.searchParams.set("paymentReference", rawRef);
+        if (safePlan) returnUrl.searchParams.set("plan", safePlan);
+        if (status) returnUrl.searchParams.set("paymentStatus", status);
+        returnUrl.hash = "subscription";
+        return res.redirect(303, returnUrl.toString());
+    }
+
+    const deepLink = `readifypro://payment?${new URLSearchParams({ ref: rawRef, status, plan: safePlan }).toString()}`;
 
     // Open the Readify app via deep link; fallback to a simple HTML page
     res.send(`<!DOCTYPE html>
@@ -278,14 +296,16 @@ router.get("/payment-callback", (req, res) => {
   </style>
   <script>
     // Try to open the app via deep link
-    window.location.href = 'readifypro://payment?ref=${ref}&status=${status}';
+    window.location.href = '${deepLink}';
   </script>
 </head>
 <body>
   <div class="card">
     <h2>Payment Processing…</h2>
     <p>Returning you to Readify Pro.<br/>
-       If the app doesn't open, please reopen it manually.</p>
+       If the app doesn't open, choose an option below.</p>
+    <p><a href="${deepLink}">Open Android app</a><br/><br/>
+       <a href="${WEB_APP_URL}">Open Readify web app</a></p>
   </div>
 </body>
 </html>`);

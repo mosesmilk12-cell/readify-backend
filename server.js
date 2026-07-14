@@ -8,7 +8,14 @@ const requireAuth = require("./middleware/requireAuth");
 // ── Startup environment check ──────────────────────────────────────
 // Logs clearly in Render so you can see immediately what's missing
 const required = ["OPENAI_API_KEY", "GOOGLE_SERVICE_ACCOUNT_JSON"];
-const optional = ["REDIS_URL", "MONNIFY_SECRET_KEY", "CLOUDCONVERT_API_KEY", "ALLOWED_ORIGINS"];
+const optional = [
+  "REDIS_URL",
+  "MONNIFY_SECRET_KEY",
+  "CLOUDCONVERT_API_KEY",
+  "ALLOWED_ORIGINS",
+  "PUBLIC_BACKEND_URL",
+  "WEB_APP_URL",
+];
 
 console.log("\n=== Readify Backend Startup ===");
 required.forEach(k => {
