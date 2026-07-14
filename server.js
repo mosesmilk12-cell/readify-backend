@@ -50,6 +50,10 @@ app.get("/", (req, res) => {
   res.json({ message: "Readify backend is running" });
 });
 
+// Subscription router must be mounted first: its Monnify callback is public,
+// while init-payment and verify-payment apply requireAuth inside the router.
+app.use("/api", subscriptionRoutes);
+
 // ── Signed-in app routes ──────────────────────────────────────────
 const protectedApi = express.Router();
 protectedApi.use(requireAuth);
@@ -59,9 +63,6 @@ protectedApi.use(quizRoutes);
 protectedApi.use(convertRoutes);
 protectedApi.use(tutorRoutes);
 app.use("/api", protectedApi);
-
-// Payment callback remains public; payment POST routes verify identity.
-app.use("/api", subscriptionRoutes);
 
 app.get("/api/check-libreoffice", (req, res) => {
   const isWindows = process.platform === "win32";
