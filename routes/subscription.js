@@ -17,6 +17,11 @@ const WEB_APP_URL         = process.env.WEB_APP_URL || "https://readifypro.com.n
 const PLAN_AMOUNTS = { lite: 700, lite_yearly: 1000, monthly: 1200, annual: 11376 };
 const PLAN_TIERS   = { lite: "ONLINE", lite_yearly: "LITE_YEARLY", monthly: "PREMIUM", annual: "PREMIUM" };
 
+function paymentReference(prefix, plan) {
+    return `RDFY-${prefix}-${plan.toUpperCase()}-${Date.now()}-${Math.random()
+        .toString(36).slice(2, 8).toUpperCase()}`;
+}
+
 // ── Monnify helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -148,6 +153,43 @@ router.post("/init-payment", requireAuth, async (req, res) => {
     }
 });
 
+// Creates a user-bound reference for Monnify's supported in-site Web Checkout modal.
+// The API key and contract code are public checkout identifiers; the secret key stays server-side.
+router.post("/init-inline-payment", requireAuth, async (req, res) => {
+    const { plan, uid, email, name } = req.body;
+    if (uid !== req.user.uid || email !== req.user.email) {
+        return res.status(403).json({ success: false, error: "Account details do not match the signed-in user." });
+    }
+    const amount = PLAN_AMOUNTS[plan];
+    if (!amount) return res.status(400).json({ success: false, error: `Unknown plan: ${plan}` });
+
+    const reference = paymentReference("WEB", plan);
+    try {
+        await admin.firestore().collection("paymentIntents").doc(reference).set({
+            uid,
+            email,
+            name: name || "Readify User",
+            plan,
+            amount,
+            platform: "web",
+            status: "PENDING",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        return res.json({
+            success: true,
+            reference,
+            amount,
+            currency: "NGN",
+            apiKey: MONNIFY_API_KEY,
+            contractCode: MONNIFY_CONTRACT,
+            paymentDescription: `Readify ${plan} subscription`,
+        });
+    } catch (err) {
+        console.error("[init-inline-payment]", err.message);
+        return res.status(500).json({ success: false, error: "Secure checkout could not be prepared." });
+    }
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 // POST /api/verify-payment
 // Body: { reference, plan, uid }
@@ -173,10 +215,11 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
         // Step 1: get Bearer token
         const token = await getMonnifyToken();
 
-        // Step 2: verify transaction (v2 endpoint uses URL-encoded reference)
-        const encodedRef = encodeURIComponent(reference);
+        // Step 2: verify transaction server-to-server by either Monnify transaction
+        // reference or the merchant payment reference used by inline checkout.
+        const referenceType = reference.startsWith("MNFY|") ? "transactionReference" : "paymentReference";
         const result = await monnifyRequest({
-            path:    `/api/v2/transactions/${encodedRef}`,
+            path:    `/api/v2/merchant/transactions/query?${referenceType}=${encodeURIComponent(reference)}`,
             method:  "GET",
             headers: { "Authorization": `Bearer ${token}` },
             body:    null,
@@ -190,6 +233,18 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
         }
 
         const txn = result.responseBody;
+
+        if (txn.paymentReference?.startsWith("RDFY-WEB-")) {
+            const intentRef = admin.firestore().collection("paymentIntents").doc(txn.paymentReference);
+            const intentSnapshot = await intentRef.get();
+            if (!intentSnapshot.exists) {
+                return res.status(403).json({ success: false, error: "This payment session is not linked to your account." });
+            }
+            const intent = intentSnapshot.data();
+            if (intent.uid !== req.user.uid || intent.plan !== plan || Number(intent.amount) !== expectedAmount) {
+                return res.status(403).json({ success: false, error: "This payment belongs to a different account or plan." });
+            }
+        }
 
         if (txn.paymentStatus !== "PAID") {
             return res.status(400).json({
@@ -229,6 +284,14 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
             .collection("users")
             .doc(uid)
             .set(updateData, { merge: true });
+
+        if (txn.paymentReference?.startsWith("RDFY-WEB-")) {
+            await admin.firestore().collection("paymentIntents").doc(txn.paymentReference).set({
+                status: "PAID",
+                transactionReference: txn.transactionReference || reference,
+                verifiedAt: now,
+            }, { merge: true });
+        }
 
         console.log(`[verify-payment] ✅ ${uid} → ${tier} (${plan}) ref=${reference}`);
 
