@@ -23,7 +23,7 @@ router.post("/generate-quiz", async (req, res) => {
 
     const allowedTypes = ["MULTIPLE_CHOICE", "TRUE_FALSE", "SHORT_ANSWER"];
     const resolvedType = allowedTypes.includes(questionType) ? questionType : "MULTIPLE_CHOICE";
-    const count        = Number(questionCount) || 10;
+    const count        = Math.min(60, Math.max(1, Number(questionCount) || 10));
     const diff         = difficulty || "Medium";
 
     // ── 1. Cache hit? ──────────────────────────────────────────
@@ -44,7 +44,7 @@ router.post("/generate-quiz", async (req, res) => {
 
       const job = await aiQueue.add(
         "quiz",
-        { title: title || "AI Generated Quiz Pack", sourceText, questionCount: count, difficulty: diff, questionType: resolvedType },
+        { title: title || "AI Generated Quiz Pack", sourceText, questionCount: count, difficulty: diff, questionType: resolvedType, premium: req.isPremium === true },
         { jobId }
       );
 
@@ -60,7 +60,7 @@ router.post("/generate-quiz", async (req, res) => {
       difficulty: diff,
       includeExplanations: includeExplanations !== false,
       questionType: resolvedType,
-      premium: req.body.premium === true,
+      premium: req.isPremium === true,
     });
 
     return res.json(result);

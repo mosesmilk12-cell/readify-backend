@@ -3,11 +3,12 @@ require("dotenv").config();
 const express = require("express");
 const cors    = require("cors");
 const { exec } = require("child_process");
+const requireAuth = require("./middleware/requireAuth");
 
 // ── Startup environment check ──────────────────────────────────────
 // Logs clearly in Render so you can see immediately what's missing
-const required = ["OPENAI_API_KEY"];
-const optional = ["REDIS_URL", "GOOGLE_SERVICE_ACCOUNT_JSON", "MONNIFY_SECRET_KEY"];
+const required = ["OPENAI_API_KEY", "GOOGLE_SERVICE_ACCOUNT_JSON"];
+const optional = ["REDIS_URL", "MONNIFY_SECRET_KEY", "CLOUDCONVERT_API_KEY", "ALLOWED_ORIGINS"];
 
 console.log("\n=== Readify Backend Startup ===");
 required.forEach(k => {
@@ -35,22 +36,32 @@ require("./queues/aiWorker");
 
 const app = express();
 
-app.use(cors());
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "https://readifypro.com.ng,https://www.readifypro.com.ng,http://localhost:3000,http://localhost:8080")
+  .split(",").map(value => value.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Origin is not allowed by CORS"));
+  }
+}));
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/", (req, res) => {
   res.json({ message: "Readify backend is running" });
 });
 
-// ── AI routes (all now cache-aware + queue-backed) ───────────────
-app.use("/api", summarizeRoutes);
-app.use("/api", ttsRoutes);
-app.use("/api", quizRoutes);
+// ── Signed-in app routes ──────────────────────────────────────────
+const protectedApi = express.Router();
+protectedApi.use(requireAuth);
+protectedApi.use(summarizeRoutes);
+protectedApi.use(ttsRoutes);
+protectedApi.use(quizRoutes);
+protectedApi.use(convertRoutes);
+protectedApi.use(tutorRoutes);
+app.use("/api", protectedApi);
 
-// ── Other routes ─────────────────────────────────────────────────
-app.use("/api", convertRoutes);
+// Payment callback remains public; payment POST routes verify identity.
 app.use("/api", subscriptionRoutes);
-app.use("/api", tutorRoutes);
 
 app.get("/api/check-libreoffice", (req, res) => {
   const isWindows = process.platform === "win32";

@@ -23,7 +23,7 @@ router.post("/summarize", async (req, res) => {
 
     // Queue if Redis available, else direct
     if (aiQueue && queueEvents) {
-      const job = await aiQueue.add("summary", { text });
+      const job = await aiQueue.add("summary", { text, premium: req.isPremium === true });
       const result = await job.waitUntilFinished(queueEvents, 45_000);
       return res.json(result);
     }
@@ -35,7 +35,7 @@ router.post("/summarize", async (req, res) => {
         { role: "system", content: "You are Readify AI. Help students understand content quickly. Respond with plain bullet points only, no markdown symbols like ** or ##." },
         { role: "user", content: prompt }
       ],
-      max_tokens: req.body.premium === true ? 1200 : 500,
+      max_tokens: req.isPremium === true ? 1200 : 500,
     });
 
     const summary = completion.choices[0]?.message?.content || "No summary returned.";

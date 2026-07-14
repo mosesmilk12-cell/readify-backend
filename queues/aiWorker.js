@@ -20,14 +20,14 @@ const worker = new Worker(
 
     // ── Summary ──
     if (name === "summary") {
-      const { text } = data;
+      const { text, premium } = data;
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           { role: "system", content: "You are Readify AI. Summarize study material with plain bullet points. No markdown like ** or ##." },
           { role: "user",   content: `Summarize this for quick revision:\n\n${text.substring(0, 6000)}` }
         ],
-        max_tokens: 500,
+        max_tokens: premium === true ? 1200 : 500,
       });
       const result = { summary: completion.choices[0]?.message?.content || "No summary returned." };
       await setCache("summary", result, text);
@@ -36,7 +36,7 @@ const worker = new Worker(
 
     // ── Quiz ──
     if (name === "quiz") {
-      const { title, sourceText, questionCount, difficulty, questionType } = data;
+      const { title, sourceText, questionCount, difficulty, questionType, premium } = data;
       const resolvedType = questionType || "MULTIPLE_CHOICE";
       const prompt = buildQuizPrompt({ questionType: resolvedType, questionCount, difficulty, sourceText });
 
@@ -46,6 +46,7 @@ const worker = new Worker(
           { role: "system", content: "Return only valid JSON matching the provided schema." },
           { role: "user",   content: prompt }
         ],
+        max_tokens: premium === true ? 3000 : 1800,
         response_format: {
           type: "json_schema",
           json_schema: schemaForQuestionType(resolvedType),

@@ -2,6 +2,7 @@ const express = require("express");
 const router  = express.Router();
 const https   = require("https");
 const admin   = require("../config/firebase");
+const requireAuth = require("../middleware/requireAuth");
 
 // ── Monnify config ────────────────────────────────────────────────────────────
 const MONNIFY_API_KEY     = process.env.MONNIFY_API_KEY    || "MK_TEST_EBEFAAP7KD";
@@ -77,8 +78,12 @@ function monnifyRequest({ path, method, headers, body }) {
 // Body: { plan, uid, email, name? }
 // Returns: { success, checkoutUrl, transactionReference, paymentReference }
 // ────────────────────────────────────────────────────────────────────────────
-router.post("/init-payment", async (req, res) => {
+router.post("/init-payment", requireAuth, async (req, res) => {
     const { plan, uid, email, name } = req.body;
+
+    if (uid !== req.user.uid || email !== req.user.email) {
+        return res.status(403).json({ success: false, error: "Account details do not match the signed-in user." });
+    }
 
     if (!plan || !uid || !email) {
         return res.status(400).json({ success: false, error: "plan, uid and email are required." });
@@ -144,8 +149,12 @@ router.post("/init-payment", async (req, res) => {
 // Body: { reference, plan, uid }
 // Verifies the transaction and upgrades the user tier in Firestore.
 // ────────────────────────────────────────────────────────────────────────────
-router.post("/verify-payment", async (req, res) => {
+router.post("/verify-payment", requireAuth, async (req, res) => {
     const { reference, plan, uid } = req.body;
+
+    if (uid !== req.user.uid) {
+        return res.status(403).json({ success: false, error: "Account details do not match the signed-in user." });
+    }
 
     if (!reference || !plan || !uid) {
         return res.status(400).json({ success: false, error: "reference, plan and uid are required." });
@@ -205,6 +214,8 @@ router.post("/verify-payment", async (req, res) => {
             subscriptionTier:      tier,
             subscriptionPlan:      plan,
             subscriptionUpdatedAt: now,
+            premiumPlan:           plan,
+            premiumExpiryMs:       expiryMs || 0,
             lastPaymentReference:  reference,
             lastPaymentAmount:     amountPaid,
         };
