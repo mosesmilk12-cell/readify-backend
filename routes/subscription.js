@@ -105,6 +105,11 @@ router.post("/init-payment", requireAuth, async (req, res) => {
     const reference = `RDFY-${plan.toUpperCase()}-${Date.now()}-${Math.random()
         .toString(36).substr(2, 6).toUpperCase()}`;
 
+    // Paystack references are verified through Paystack, not Monnify.
+    if (reference.startsWith("RDFY-PSK-")) {
+        return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
+    }
+
     try {
         // Step 1: get Bearer token
         const token = await getMonnifyToken();
@@ -312,6 +317,182 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
         });
     }
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// PAYSTACK — second processor (cards, bank transfer, USSD, QR, mobile money)
+// ────────────────────────────────────────────────────────────────────────────
+
+const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || "";
+
+function paystackRequest(path, method, body) {
+    return fetch(`https://api.paystack.co${path}`, {
+        method,
+        headers: {
+            "Authorization": `Bearer ${PAYSTACK_SECRET}`,
+            "Content-Type":  "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+    }).then(r => r.json());
+}
+
+// POST /api/init-paystack-payment  { plan }
+router.post("/init-paystack-payment", requireAuth, async (req, res) => {
+    const { plan } = req.body;
+    const uid   = req.user.uid;
+    const email = req.user.email;
+
+    const expectedAmount = PLAN_AMOUNTS[plan];
+    if (!expectedAmount) {
+        return res.status(400).json({ success: false, error: `Unknown plan: ${plan}` });
+    }
+    if (!PAYSTACK_SECRET) {
+        return res.status(503).json({ success: false, error: "Paystack is not configured yet." });
+    }
+
+    try {
+        const reference = `RDFY-PSK-${uid.slice(0, 8)}-${Date.now()}`;
+
+        // Record the intent so verification can prove ownership
+        await admin.firestore().collection("paymentIntents").doc(reference).set({
+            uid,
+            plan,
+            amount:    expectedAmount,
+            provider:  "paystack",
+            status:    "PENDING",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        const callbackUrl = `${PUBLIC_BACKEND_URL}/api/paystack-callback?platform=web&plan=${encodeURIComponent(plan)}`;
+
+        const init = await paystackRequest("/transaction/initialize", "POST", {
+            email,
+            amount:       expectedAmount * 100,          // Paystack uses kobo
+            reference,
+            callback_url: callbackUrl,
+            channels:     ["card", "bank", "ussd", "bank_transfer", "qr", "mobile_money"],
+            metadata:     { readifyUid: uid, plan, platform: "web" },
+        });
+
+        if (!init || init.status !== true || !init.data?.authorization_url) {
+            console.error("[paystack-init]", init?.message);
+            return res.status(502).json({ success: false, error: "Could not start the Paystack checkout." });
+        }
+
+        return res.json({
+            success:          true,
+            reference,
+            authorizationUrl: init.data.authorization_url,
+            accessCode:       init.data.access_code,
+        });
+
+    } catch (err) {
+        console.error("[paystack-init]", err.message);
+        return res.status(500).json({ success: false, error: "Could not start the Paystack checkout." });
+    }
+});
+
+// GET /api/paystack-callback — Paystack redirects the browser here
+router.get("/paystack-callback", (req, res) => {
+    const { reference, trxref, plan, platform } = req.query;
+    const rawRef   = reference || trxref || "";
+    const safePlan = Object.prototype.hasOwnProperty.call(PLAN_AMOUNTS, plan) ? plan : "";
+
+    if (platform === "web") {
+        const returnUrl = new URL(WEB_APP_URL);
+        if (rawRef)   returnUrl.searchParams.set("paymentReference", rawRef);
+        if (safePlan) returnUrl.searchParams.set("plan", safePlan);
+        returnUrl.searchParams.set("paymentStatus", "PENDING_VERIFY");
+        returnUrl.hash = "subscription";
+        return res.redirect(303, returnUrl.toString());
+    }
+
+    const deepLink = `readifypro://payment?${new URLSearchParams({ ref: rawRef, plan: safePlan }).toString()}`;
+    return res.redirect(303, deepLink);
+});
+
+// Shared: verify a Paystack transaction and upgrade the user
+async function verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount }) {
+    if (!PAYSTACK_SECRET) {
+        return res.status(503).json({ success: false, error: "Paystack is not configured yet." });
+    }
+    try {
+        // Ownership check via the recorded intent
+        const intentSnapshot = await admin.firestore()
+                .collection("paymentIntents").doc(reference).get();
+        if (!intentSnapshot.exists) {
+            return res.status(403).json({ success: false, error: "This payment session is not linked to your account." });
+        }
+        const intent = intentSnapshot.data();
+        if (intent.uid !== uid || intent.plan !== plan || Number(intent.amount) !== expectedAmount) {
+            return res.status(403).json({ success: false, error: "This payment belongs to a different account or plan." });
+        }
+
+        const result = await paystackRequest(
+                `/transaction/verify/${encodeURIComponent(reference)}`, "GET", null);
+
+        if (!result || result.status !== true) {
+            return res.status(400).json({ success: false, error: "Could not verify transaction with Paystack." });
+        }
+
+        const txn = result.data;
+        if (txn.status !== "success") {
+            return res.status(400).json({ success: false, error: `Payment not completed. Status: ${txn.status}` });
+        }
+
+        const amountPaid = (txn.amount || 0) / 100;   // kobo → naira
+        if (Math.abs(amountPaid - expectedAmount) > 1) {
+            console.warn(`[paystack-verify] Amount mismatch: expected ₦${expectedAmount}, got ₦${amountPaid}`);
+            return res.status(400).json({
+                success: false,
+                error:   `Amount mismatch. Expected ₦${expectedAmount}, received ₦${amountPaid}`,
+            });
+        }
+
+        // Upgrade the user — identical shape to the Monnify path
+        const tier     = PLAN_TIERS[plan];
+        const now      = admin.firestore.FieldValue.serverTimestamp();
+        const expiryMs = plan === "annual" || plan === "lite_yearly" ? Date.now() + 365 * 86_400_000
+                       : plan === "monthly" ? Date.now() +  30 * 86_400_000
+                       : null;
+
+        const updateData = {
+            subscriptionTier:      tier,
+            subscriptionPlan:      plan,
+            subscriptionUpdatedAt: now,
+            premiumPlan:           plan,
+            premiumExpiryMs:       expiryMs || 0,
+            lastPaymentReference:  reference,
+            lastPaymentAmount:     amountPaid,
+            lastPaymentProvider:   "paystack",
+        };
+        if (expiryMs) updateData.subscriptionExpiresAt = new Date(expiryMs);
+
+        await admin.firestore().collection("users").doc(uid).set(updateData, { merge: true });
+
+        await admin.firestore().collection("paymentIntents").doc(reference).set({
+            status: "PAID",
+            verifiedAt: now,
+        }, { merge: true });
+
+        console.log(`[paystack-verify] ✅ ${uid} → ${tier} (${plan}) ref=${reference}`);
+
+        return res.json({
+            success:   true,
+            tier,
+            plan,
+            amountPaid,
+            premiumExpiryMs: expiryMs || 0,
+            expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
+        });
+
+    } catch (err) {
+        console.error("[paystack-verify]", err.message);
+        return res.status(500).json({
+            success: false,
+            error:   "Payment verification failed. Please contact support@readifypro.com.ng",
+        });
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // GET /api/payment-callback
