@@ -105,9 +105,20 @@ router.post("/init-payment", requireAuth, async (req, res) => {
     const reference = `RDFY-${plan.toUpperCase()}-${Date.now()}-${Math.random()
         .toString(36).substr(2, 6).toUpperCase()}`;
 
-    // Paystack references are verified through Paystack, not Monnify.
-    if (reference.startsWith("RDFY-PSK-")) {
-        return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
+    // Route to the right processor. The payment intent recorded at init time
+    // is the source of truth — the reference prefix is only a fallback.
+    try {
+        const intentDoc = await admin.firestore()
+                .collection("paymentIntents").doc(reference).get();
+        const provider = intentDoc.exists ? intentDoc.data().provider : null;
+        if (provider === "paystack" || reference.startsWith("RDFY-PSK-")) {
+            return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
+        }
+    } catch (e) {
+        // Firestore hiccup — fall through to prefix check
+        if (reference.startsWith("RDFY-PSK-")) {
+            return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
+        }
     }
 
     try {
@@ -358,11 +369,14 @@ router.post("/init-paystack-payment", requireAuth, async (req, res) => {
             plan,
             amount:    expectedAmount,
             provider:  "paystack",
+            platform:  "web",
             status:    "PENDING",
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
-        const callbackUrl = `${PUBLIC_BACKEND_URL}/api/paystack-callback?platform=web&plan=${encodeURIComponent(plan)}`;
+        // No query params here — Paystack appends its own (?trxref=&reference=)
+        // and mixing the two can corrupt both. Plan/platform live in the intent.
+        const callbackUrl = `${PUBLIC_BACKEND_URL}/api/paystack-callback`;
 
         const init = await paystackRequest("/transaction/initialize", "POST", {
             email,
@@ -392,21 +406,34 @@ router.post("/init-paystack-payment", requireAuth, async (req, res) => {
 });
 
 // GET /api/paystack-callback — Paystack redirects the browser here
-router.get("/paystack-callback", (req, res) => {
-    const { reference, trxref, plan, platform } = req.query;
-    const rawRef   = reference || trxref || "";
-    const safePlan = Object.prototype.hasOwnProperty.call(PLAN_AMOUNTS, plan) ? plan : "";
+router.get("/paystack-callback", async (req, res) => {
+    const rawRef = req.query.reference || req.query.trxref || "";
+
+    // Plan and platform come from the intent recorded at init — never from
+    // the query string, which Paystack's own params can interfere with.
+    let plan = "", platform = "web";
+    if (rawRef) {
+        try {
+            const intentDoc = await admin.firestore()
+                    .collection("paymentIntents").doc(rawRef).get();
+            if (intentDoc.exists) {
+                const intent = intentDoc.data();
+                if (Object.prototype.hasOwnProperty.call(PLAN_AMOUNTS, intent.plan)) plan = intent.plan;
+                if (intent.platform) platform = intent.platform;
+            }
+        } catch (e) { /* redirect anyway; the web app verifies from localStorage */ }
+    }
 
     if (platform === "web") {
         const returnUrl = new URL(WEB_APP_URL);
-        if (rawRef)   returnUrl.searchParams.set("paymentReference", rawRef);
-        if (safePlan) returnUrl.searchParams.set("plan", safePlan);
+        if (rawRef) returnUrl.searchParams.set("paymentReference", rawRef);
+        if (plan)   returnUrl.searchParams.set("plan", plan);
         returnUrl.searchParams.set("paymentStatus", "PENDING_VERIFY");
         returnUrl.hash = "subscription";
         return res.redirect(303, returnUrl.toString());
     }
 
-    const deepLink = `readifypro://payment?${new URLSearchParams({ ref: rawRef, plan: safePlan }).toString()}`;
+    const deepLink = `readifypro://payment?${new URLSearchParams({ ref: rawRef, plan }).toString()}`;
     return res.redirect(303, deepLink);
 });
 
