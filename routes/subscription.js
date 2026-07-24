@@ -330,6 +330,110 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// POST /api/redeem-code   { code }
+// Redeems a promo / gift code stored in the `redeemCodes` collection.
+//
+// Firestore document shape (doc id = the code in UPPERCASE):
+//   {
+//     plan:         "monthly" | "annual" | "lite" | "lite_yearly" | "premium",
+//     durationDays: 30,          // optional; overrides the plan default
+//     maxUses:      1,           // 0 or missing = unlimited
+//     usedCount:    0,
+//     usedBy:       [],          // uids that already redeemed it
+//     active:       true,
+//     expiresAt:    <ms epoch>   // optional; code itself stops working after this
+//   }
+// ────────────────────────────────────────────────────────────────────────────
+router.post("/redeem-code", requireAuth, async (req, res) => {
+    const uid  = req.user.uid;
+    const code = String(req.body.code || "").trim().toUpperCase();
+
+    if (!code || code.length < 4) {
+        return res.status(400).json({ success: false, error: "Please enter a valid code." });
+    }
+
+    try {
+        const db      = admin.firestore();
+        const codeRef = db.collection("redeemCodes").doc(code);
+
+        const result = await db.runTransaction(async (tx) => {
+            const snap = await tx.get(codeRef);
+            if (!snap.exists) throw new Error("INVALID");
+
+            const data = snap.data();
+            if (data.active === false)                       throw new Error("DISABLED");
+            if (data.expiresAt && Date.now() > data.expiresAt) throw new Error("EXPIRED");
+
+            const usedBy    = Array.isArray(data.usedBy) ? data.usedBy : [];
+            const usedCount = Number(data.usedCount || 0);
+            const maxUses   = Number(data.maxUses || 0);
+
+            if (usedBy.includes(uid))                   throw new Error("ALREADY_USED");
+            if (maxUses > 0 && usedCount >= maxUses)    throw new Error("EXHAUSTED");
+
+            const plan = data.plan || "monthly";
+            const tier = PLAN_TIERS[plan] || "PREMIUM";
+
+            const defaultDays = plan === "annual" || plan === "lite_yearly" ? 365
+                              : plan === "monthly" ? 30
+                              : 0;                       // "lite" = lifetime
+            const days     = Number(data.durationDays || defaultDays);
+            const expiryMs = days > 0 ? Date.now() + days * 86_400_000 : null;
+
+            const now = admin.firestore.FieldValue.serverTimestamp();
+
+            const userUpdate = {
+                subscriptionTier:      tier,
+                subscriptionPlan:      plan,
+                subscriptionUpdatedAt: now,
+                premiumPlan:           plan,
+                premiumExpiryMs:       expiryMs || 0,
+                lastRedeemedCode:      code,
+                // A redeemed code supersedes any running free trial
+                freeTrialUsed:         true,
+            };
+            if (expiryMs) userUpdate.subscriptionExpiresAt = new Date(expiryMs);
+
+            tx.set(db.collection("users").doc(uid), userUpdate, { merge: true });
+            tx.set(codeRef, {
+                usedCount:  usedCount + 1,
+                usedBy:     [...usedBy, uid],
+                lastUsedAt: now,
+            }, { merge: true });
+
+            return { tier, plan, expiryMs, days };
+        });
+
+        console.log(`[redeem] ✅ ${uid} redeemed ${code} → ${result.tier} (${result.plan})`);
+
+        return res.json({
+            success:         true,
+            tier:            result.tier,
+            plan:            result.plan,
+            premiumExpiryMs: result.expiryMs || 0,
+            durationDays:    result.days,
+            message:         result.days > 0
+                    ? `Code accepted — ${result.days} days of ${result.tier} unlocked!`
+                    : `Code accepted — ${result.tier} unlocked!`,
+        });
+
+    } catch (err) {
+        const messages = {
+            INVALID:      "That code was not recognised.",
+            DISABLED:     "This code is no longer active.",
+            EXPIRED:      "This code has expired.",
+            ALREADY_USED: "You have already redeemed this code.",
+            EXHAUSTED:    "This code has reached its redemption limit.",
+        };
+        const known = messages[err.message];
+        if (known) return res.status(400).json({ success: false, error: known });
+
+        console.error("[redeem]", err.message);
+        return res.status(500).json({ success: false, error: "Could not redeem the code. Please try again." });
+    }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // PAYSTACK — second processor (cards, bank transfer, USSD, QR, mobile money)
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -581,5 +685,118 @@ router.get("/payment-callback", (req, res) => {
 </body>
 </html>`);
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// POST /api/redeem-code   { code }
+// Redeems a promo/gift code for a subscription tier.
+//
+// Firestore layout:
+//   redeemCodes/{CODE}
+//     tier         "PREMIUM" | "LITE_YEARLY" | "ONLINE"
+//     durationDays  number  (0 or missing = no expiry, e.g. lifetime Lite)
+//     maxUses       number  (0 or missing = unlimited)
+//     usedCount     number
+//     active        boolean
+//     expiresAt     millis  (optional — code itself stops working after this)
+//   redeemCodes/{CODE}/redemptions/{uid}   — one doc per user, blocks re-use
+// ────────────────────────────────────────────────────────────────────────────
+router.post("/redeem-code", requireAuth, async (req, res) => {
+    const uid  = req.user.uid;
+    const raw  = (req.body.code || "").toString().trim().toUpperCase();
+    const code = raw.replace(/\s+/g, "");
+
+    if (!code || code.length < 4 || code.length > 32) {
+        return res.status(400).json({ success: false, error: "Please enter a valid code." });
+    }
+
+    const db      = admin.firestore();
+    const codeRef = db.collection("redeemCodes").doc(code);
+    const useRef  = codeRef.collection("redemptions").doc(uid);
+    const userRef = db.collection("users").doc(uid);
+
+    try {
+        const result = await db.runTransaction(async (tx) => {
+            const codeSnap = await tx.get(codeRef);
+            if (!codeSnap.exists) throw new Error("INVALID");
+
+            const data = codeSnap.data();
+            if (data.active === false) throw new Error("DISABLED");
+            if (data.expiresAt && Date.now() > Number(data.expiresAt)) throw new Error("EXPIRED");
+
+            const maxUses   = Number(data.maxUses || 0);
+            const usedCount = Number(data.usedCount || 0);
+            if (maxUses > 0 && usedCount >= maxUses) throw new Error("USED_UP");
+
+            const useSnap = await tx.get(useRef);
+            if (useSnap.exists) throw new Error("ALREADY_REDEEMED");
+
+            const tier = String(data.tier || "PREMIUM").toUpperCase();
+            if (!["PREMIUM", "LITE_YEARLY", "ONLINE"].includes(tier)) throw new Error("INVALID");
+
+            const days = Number(data.durationDays || 0);
+
+            // Extend from the later of "now" and any existing expiry,
+            // so a redeemed code never shortens an active subscription.
+            const userSnap    = await tx.get(userRef);
+            const currentExp  = userSnap.exists ? Number(userSnap.data().premiumExpiryMs || 0) : 0;
+            const base        = Math.max(Date.now(), currentExp);
+            const expiryMs    = days > 0 ? base + days * 86_400_000 : 0;
+
+            const update = {
+                subscriptionTier:      tier,
+                subscriptionPlan:      `code:${code}`,
+                subscriptionUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                premiumPlan:           days > 0 ? "redeemed" : "lifetime",
+                premiumExpiryMs:       expiryMs,
+                lastRedeemedCode:      code,
+            };
+            if (expiryMs) update.subscriptionExpiresAt = new Date(expiryMs);
+
+            tx.set(userRef, update, { merge: true });
+            tx.set(useRef, {
+                uid,
+                redeemedAt: admin.firestore.FieldValue.serverTimestamp(),
+                tier,
+                days,
+            });
+            tx.update(codeRef, { usedCount: usedCount + 1 });
+
+            return { tier, days, expiryMs };
+        });
+
+        console.log(`[redeem] ✅ ${uid} redeemed ${code} → ${result.tier} (${result.days}d)`);
+
+        return res.json({
+            success:         true,
+            tier:            result.tier,
+            days:            result.days,
+            premiumExpiryMs: result.expiryMs,
+            message:         result.days > 0
+                ? `Code accepted — ${result.days} days of ${tierLabel(result.tier)} unlocked!`
+                : `Code accepted — ${tierLabel(result.tier)} unlocked!`,
+        });
+
+    } catch (err) {
+        const messages = {
+            INVALID:          "This code is not valid. Please check and try again.",
+            DISABLED:         "This code is no longer active.",
+            EXPIRED:          "This code has expired.",
+            USED_UP:          "This code has reached its redemption limit.",
+            ALREADY_REDEEMED: "You have already redeemed this code.",
+        };
+        const known = messages[err.message];
+        if (!known) console.error("[redeem]", err.message);
+        return res.status(known ? 400 : 500).json({
+            success: false,
+            error:   known || "Could not redeem this code. Please try again.",
+        });
+    }
+});
+
+function tierLabel(tier) {
+    if (tier === "PREMIUM")     return "Readify Premium";
+    if (tier === "LITE_YEARLY") return "Readify Lite Yearly";
+    return "Readify Lite";
+}
 
 module.exports = router;
