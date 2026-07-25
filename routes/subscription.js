@@ -105,22 +105,6 @@ router.post("/init-payment", requireAuth, async (req, res) => {
     const reference = `RDFY-${plan.toUpperCase()}-${Date.now()}-${Math.random()
         .toString(36).substr(2, 6).toUpperCase()}`;
 
-    // Route to the right processor. The payment intent recorded at init time
-    // is the source of truth — the reference prefix is only a fallback.
-    try {
-        const intentDoc = await admin.firestore()
-                .collection("paymentIntents").doc(reference).get();
-        const provider = intentDoc.exists ? intentDoc.data().provider : null;
-        if (provider === "paystack" || reference.startsWith("RDFY-PSK-")) {
-            return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
-        }
-    } catch (e) {
-        // Firestore hiccup — fall through to prefix check
-        if (reference.startsWith("RDFY-PSK-")) {
-            return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
-        }
-    }
-
     try {
         // Step 1: get Bearer token
         const token = await getMonnifyToken();
@@ -225,6 +209,22 @@ router.post("/verify-payment", requireAuth, async (req, res) => {
     const expectedAmount = PLAN_AMOUNTS[plan];
     if (!expectedAmount) {
         return res.status(400).json({ success: false, error: `Unknown plan: ${plan}` });
+    }
+
+    // Route verification using the recorded payment provider. Paystack references
+    // also carry a dedicated prefix so a temporary Firestore read failure cannot
+    // accidentally send them to Monnify.
+    try {
+        const intentDoc = await admin.firestore()
+                .collection("paymentIntents").doc(reference).get();
+        const provider = intentDoc.exists ? intentDoc.data().provider : null;
+        if (provider === "paystack" || reference.startsWith("RDFY-PSK-")) {
+            return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
+        }
+    } catch (e) {
+        if (reference.startsWith("RDFY-PSK-")) {
+            return verifyPaystackAndUpgrade(req, res, { reference, plan, uid, expectedAmount });
+        }
     }
 
     try {
@@ -434,7 +434,7 @@ router.post("/redeem-code", requireAuth, async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// PAYSTACK — second processor (cards, bank transfer, USSD, QR, mobile money)
+// PAYSTACK — web checkout (cards, bank transfer, USSD, QR, mobile money)
 // ────────────────────────────────────────────────────────────────────────────
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || "";

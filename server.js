@@ -11,6 +11,7 @@ const required = ["OPENAI_API_KEY", "GOOGLE_SERVICE_ACCOUNT_JSON"];
 const optional = [
   "REDIS_URL",
   "MONNIFY_SECRET_KEY",
+  "PAYSTACK_SECRET_KEY",
   "CLOUDCONVERT_API_KEY",
   "ALLOWED_ORIGINS",
   "PUBLIC_BACKEND_URL",
@@ -57,8 +58,8 @@ app.get("/", (req, res) => {
   res.json({ message: "Readify backend is running" });
 });
 
-// Subscription router must be mounted first: its Monnify callback is public,
-// while init-payment and verify-payment apply requireAuth inside the router.
+// Subscription routes are mounted first because payment callbacks are public,
+// while starting and verifying a payment still require Firebase authentication.
 app.use("/api", subscriptionRoutes);
 
 // ── Signed-in app routes ──────────────────────────────────────────
