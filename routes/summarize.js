@@ -7,9 +7,11 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const { getCache, setCache } = require("../config/cache");
 const { aiQueue, queueEvents } = require("../config/queue");
+const requestLogger=require("../services/analytics/requestLogger");
 
 router.post("/summarize", async (req, res) => {
   try {
+    const __track=requestLogger.start("summary");
     const { text } = req.body;
     if (!text || !text.trim()) {
       return res.status(400).json({ summary: "No text provided." });
