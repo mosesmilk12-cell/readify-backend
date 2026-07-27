@@ -1,24 +1,23 @@
-const DEFAULT_PRICING = {
-  "gpt-4o-mini": {
-    inputPerMillion: Number(process.env.GPT_4O_MINI_INPUT_PER_MILLION_USD || 0.15),
-    outputPerMillion: Number(process.env.GPT_4O_MINI_OUTPUT_PER_MILLION_USD || 0.60),
-  },
-};
+const DEFAULT_PRICING = Object.freeze({
+  "gpt-4o-mini": { inputPerMillion: 0.15, outputPerMillion: 0.60 },
+  "gpt-4o-mini-transcribe": { inputPerMillion: 1.25, outputPerMillion: 5.00 },
+  "tts-1": { perMillionCharacters: 15.00 },
+});
 
 function getPricing(model) {
-  const fallback = {
-    inputPerMillion: Number(process.env.AI_DEFAULT_INPUT_PER_MILLION_USD || 0),
-    outputPerMillion: Number(process.env.AI_DEFAULT_OUTPUT_PER_MILLION_USD || 0),
-  };
-  return DEFAULT_PRICING[model] || fallback;
+  return DEFAULT_PRICING[model] || { inputPerMillion: 0, outputPerMillion: 0 };
 }
 
-function estimateCostUsd({ model, inputTokens = 0, outputTokens = 0, cached = false }) {
-  if (cached) return 0;
+function estimateTextCostUsd({ model, inputTokens = 0, outputTokens = 0 }) {
   const pricing = getPricing(model);
-  const inputCost = (Number(inputTokens) / 1_000_000) * pricing.inputPerMillion;
-  const outputCost = (Number(outputTokens) / 1_000_000) * pricing.outputPerMillion;
+  const inputCost = (Number(inputTokens) / 1_000_000) * (pricing.inputPerMillion || 0);
+  const outputCost = (Number(outputTokens) / 1_000_000) * (pricing.outputPerMillion || 0);
   return Number((inputCost + outputCost).toFixed(8));
 }
 
-module.exports = { estimateCostUsd, getPricing };
+function estimateTtsCostUsd({ model = "tts-1", characters = 0 }) {
+  const pricing = getPricing(model);
+  return Number(((Number(characters) / 1_000_000) * (pricing.perMillionCharacters || 0)).toFixed(8));
+}
+
+module.exports = { estimateTextCostUsd, estimateTtsCostUsd };

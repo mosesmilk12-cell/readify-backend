@@ -21,6 +21,10 @@ const audioUpload = multer({
 
 const { getTTSCache, setTTSCache } = require("../config/cache");
 const { aiQueue, queueEvents }     = require("../config/queue");
+const logger = require("../services/analytics/requestLogger");
+const { estimateTtsCostUsd, estimateTextCostUsd } = require("../services/analytics/costService");
+const estimator = require("../services/analytics/tokenEstimator");
+const { recordAiEvent } = require("../services/analytics/metricsService");
 
 const VOICE_STYLES = {
   default:   { voice: "alloy",   instructions: "Speak clearly and naturally like a helpful study tutor." },
@@ -70,6 +74,8 @@ async function cleanTranscript(text, title) {
 }
 
 router.post("/tts", async (req, res) => {
+  const track = logger.start("tts", req);
+  const model = "tts-1";
   try {
     const { text, voiceStyle } = req.body;
     if (!text || !text.trim()) {
@@ -81,6 +87,7 @@ router.post("/tts", async (req, res) => {
     // Cache check
     const cachedBuffer = await getTTSCache(text, voiceStyle || "default");
     if (cachedBuffer) {
+      await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: true, success: true, inputCharacters: text.length, estimatedCostUsd: 0 }));
       res.setHeader("Content-Type", "audio/mpeg");
       return res.send(cachedBuffer);
     }
@@ -90,6 +97,8 @@ router.post("/tts", async (req, res) => {
       const job = await aiQueue.add("tts", { text, voiceStyle: voiceStyle || "default" });
       const result = await job.waitUntilFinished(queueEvents, 60_000);
       const buffer = Buffer.from(result.audioBase64, "base64");
+      const estimatedCostUsd = estimateTtsCostUsd({ model, characters: text.substring(0, 4000).length });
+      await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: true, inputCharacters: text.substring(0, 4000).length, estimatedCostUsd }));
       res.setHeader("Content-Type", "audio/mpeg");
       return res.send(buffer);
     }
@@ -103,16 +112,21 @@ router.post("/tts", async (req, res) => {
 
     const buffer = Buffer.from(await audio.arrayBuffer());
     await setTTSCache(text, voiceStyle || "default", buffer);
+    const estimatedCostUsd = estimateTtsCostUsd({ model, characters: text.substring(0, 4000).length });
+    await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: true, inputCharacters: text.substring(0, 4000).length, estimatedCostUsd }));
     res.setHeader("Content-Type", "audio/mpeg");
     return res.send(buffer);
 
   } catch (err) {
-    console.error("[TTS]", err.message);
+    await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: false, error: err.message, estimatedCostUsd: 0 })).catch(() => {});
+    console.error("[TTS]", track.requestId, err.message);
     return res.status(500).json({ error: "AI voice generation failed: " + err.message });
   }
 });
 
 router.post("/transcribe-audio", audioUpload.single("audio"), async (req, res) => {
+  const track = logger.start("transcription", req);
+  const model = "gpt-4o-mini-transcribe";
   try {
     if (!["ONLINE", "LITE_YEARLY", "PREMIUM"].includes(req.userTier)) {
       return res.status(403).json({ error: "Audio to PDF requires Readify Pro Lite or higher." });
@@ -155,9 +169,13 @@ router.post("/transcribe-audio", audioUpload.single("audio"), async (req, res) =
     } catch (cleanupError) {
       console.warn("[Transcript cleanup]", cleanupError.message);
     }
+    const tokens = estimator.estimate(rawText, text);
+    const estimatedCostUsd = estimateTextCostUsd({ model, ...tokens });
+    await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: true, ...tokens, durationSeconds, estimatedCostUsd }));
     return res.json({ success: true, text, cleaned, durationSeconds });
   } catch (err) {
-    console.error("[Transcription]", err.message);
+    await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: false, error: err.message, estimatedCostUsd: 0 })).catch(() => {});
+    console.error("[Transcription]", track.requestId, err.message);
     const message = err.code === "LIMIT_FILE_SIZE"
       ? "The recording is too large. Keep it under 25 MB."
       : "Audio transcription failed. Please try again.";

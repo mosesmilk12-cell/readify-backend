@@ -1,16 +1,24 @@
 const crypto = require("crypto");
 
-function createRequestTracker(feature) {
-  const startedAt = Date.now();
-  const requestId = `AI-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+function createRequestId() {
+  return `AI-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+}
+
+function start(feature, req) {
   return {
-    requestId,
+    requestId: req?.aiRequestId || createRequestId(),
     feature,
-    startedAt,
-    durationMs() {
-      return Date.now() - startedAt;
-    },
+    startedAt: Date.now(),
   };
 }
 
-module.exports = { createRequestTracker };
+function finish(tracker, extra = {}) {
+  return {
+    requestId: tracker.requestId,
+    feature: tracker.feature,
+    durationMs: Math.max(0, Date.now() - tracker.startedAt),
+    ...extra,
+  };
+}
+
+module.exports = { createRequestId, start, finish };

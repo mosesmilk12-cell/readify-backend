@@ -2,6 +2,10 @@ const express = require("express");
 const router  = express.Router();
 const OpenAI  = require("openai");
 const openai  = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const logger = require("../services/analytics/requestLogger");
+const estimator = require("../services/analytics/tokenEstimator");
+const { estimateTextCostUsd } = require("../services/analytics/costService");
+const { recordAiEvent } = require("../services/analytics/metricsService");
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 const TUTOR_SYSTEM = `You are Readify Tutor — a friendly, expert study assistant for Nigerian students.
@@ -62,6 +66,8 @@ WHEN TO DRAW:
 // Returns: { reply: string }
 // ────────────────────────────────────────────────────────────────────────────
 router.post("/tutor/chat", async (req, res) => {
+    const track = logger.start("tutor", req);
+    const model = "gpt-4o-mini";
     const {
         messages         = [],
         context          = "",
@@ -116,10 +122,15 @@ router.post("/tutor/chat", async (req, res) => {
         const reply = completion.choices[0]?.message?.content?.trim() || "";
         if (!reply) return res.status(500).json({ error: "Empty response from AI." });
 
+        const inputText = [...systemMessages, ...safeMessages].map(m => m.content).join("\n");
+        const tokens = estimator.estimate(inputText, reply);
+        const estimatedCostUsd = estimateTextCostUsd({ model, ...tokens });
+        await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: true, ...tokens, estimatedCostUsd }));
         return res.json({ reply });
 
     } catch (err) {
-        console.error("[tutor/chat]", err.message);
+        await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: false, error: err.message, estimatedCostUsd: 0 })).catch(() => {});
+        console.error("[tutor/chat]", track.requestId, err.message);
         return res.status(500).json({ error: "Tutor is unavailable right now. Please try again." });
     }
 });

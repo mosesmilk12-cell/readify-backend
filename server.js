@@ -4,6 +4,7 @@ const express = require("express");
 const cors    = require("cors");
 const { exec } = require("child_process");
 const requireAuth = require("./middleware/requireAuth");
+const requestTracking = require("./middleware/requestTracking");
 
 // ── Startup environment check ──────────────────────────────────────
 // Logs clearly in Render so you can see immediately what's missing
@@ -65,6 +66,7 @@ app.use("/api", subscriptionRoutes);
 // ── Signed-in app routes ──────────────────────────────────────────
 const protectedApi = express.Router();
 protectedApi.use(requireAuth);
+protectedApi.use(requestTracking);
 protectedApi.use(summarizeRoutes);
 protectedApi.use(ttsRoutes);
 protectedApi.use(quizRoutes);
