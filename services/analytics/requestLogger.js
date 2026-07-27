@@ -1,3 +1,16 @@
-const crypto=require('crypto');
-exports.start=(feature)=>({id:'AI-'+Date.now()+'-'+crypto.randomBytes(3).toString('hex').toUpperCase(),feature,start:Date.now()});
-exports.finish=(ctx,meta={})=>({requestId:ctx.id,durationMs:Date.now()-ctx.start,...meta});
+const crypto = require("crypto");
+
+function createRequestTracker(feature) {
+  const startedAt = Date.now();
+  const requestId = `AI-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+  return {
+    requestId,
+    feature,
+    startedAt,
+    durationMs() {
+      return Date.now() - startedAt;
+    },
+  };
+}
+
+module.exports = { createRequestTracker };
