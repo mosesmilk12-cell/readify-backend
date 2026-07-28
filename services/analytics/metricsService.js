@@ -47,8 +47,16 @@ async function recordAiEvent(event) {
     successfulRequests: FieldValue.increment(success ? 1 : 0),
     failedRequests: FieldValue.increment(success ? 0 : 1),
     estimatedCostUsd: FieldValue.increment(cost),
-    [`features.${feature}.requests`]: FieldValue.increment(1),
-    [`features.${feature}.costUsd`]: FieldValue.increment(cost),
+    // NOTE: dot-notation keys only resolve to nested paths with update().
+    // These documents are written with set({merge:true}) so they can be
+    // created on first use, and there dots are taken literally — the map has
+    // to be nested explicitly or the breakdown never materialises.
+    features: {
+      [feature]: {
+        requests: FieldValue.increment(1),
+        costUsd: FieldValue.increment(cost),
+      },
+    },
     updatedAt: FieldValue.serverTimestamp(),
   };
 
