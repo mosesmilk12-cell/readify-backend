@@ -5,6 +5,7 @@ const cors    = require("cors");
 const { exec } = require("child_process");
 const requireAuth = require("./middleware/requireAuth");
 const requestTracking = require("./middleware/requestTracking");
+const usageRoutes     = require("./routes/usage");
 
 // ── Startup environment check ──────────────────────────────────────
 // Logs clearly in Render so you can see immediately what's missing
@@ -72,6 +73,7 @@ protectedApi.use(ttsRoutes);
 protectedApi.use(quizRoutes);
 protectedApi.use(convertRoutes);
 protectedApi.use(tutorRoutes);
+protectedApi.use(usageRoutes);
 app.use("/api", protectedApi);
 
 app.get("/api/check-libreoffice", (req, res) => {

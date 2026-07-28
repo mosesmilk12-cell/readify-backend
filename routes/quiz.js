@@ -8,8 +8,9 @@ const logger = require("../services/analytics/requestLogger");
 const estimator = require("../services/analytics/tokenEstimator");
 const { estimateTextCostUsd } = require("../services/analytics/costService");
 const { recordAiEvent } = require("../services/analytics/metricsService");
+const enforceAiQuota = require("../middleware/enforceAiQuota");
 
-router.post("/generate-quiz", async (req, res) => {
+router.post("/generate-quiz", enforceAiQuota("quiz"), async (req, res) => {
   const track = logger.start("quiz", req);
   const model = "gpt-4o-mini";
   try {
@@ -42,6 +43,7 @@ router.post("/generate-quiz", async (req, res) => {
     await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: true, ...tokens, estimatedCostUsd }));
     return res.json(result);
   } catch (err) {
+    if (req.releaseAiUsage) await req.releaseAiUsage();
     await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: false, error: err.message, estimatedCostUsd: 0 })).catch(() => {});
     console.error("[Quiz]", track.requestId, err.message);
     return res.status(500).json({ error: "Quiz generation failed" });

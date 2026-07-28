@@ -9,8 +9,9 @@ const logger = require("../services/analytics/requestLogger");
 const estimator = require("../services/analytics/tokenEstimator");
 const { estimateTextCostUsd } = require("../services/analytics/costService");
 const { recordAiEvent } = require("../services/analytics/metricsService");
+const enforceAiQuota = require("../middleware/enforceAiQuota");
 
-router.post("/summarize", async (req, res) => {
+router.post("/summarize", enforceAiQuota("summary"), async (req, res) => {
   const track = logger.start("summary", req);
   const { text } = req.body || {};
   const model = "gpt-4o-mini";
@@ -47,6 +48,7 @@ router.post("/summarize", async (req, res) => {
     await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: true, ...tokens, estimatedCostUsd }));
     return res.json(result);
   } catch (err) {
+    if (req.releaseAiUsage) await req.releaseAiUsage();
     await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: false, error: err.message, estimatedCostUsd: 0 })).catch(() => {});
     console.error("[Summarize]", track.requestId, err.message);
     return res.status(500).json({ summary: "AI summary failed: " + err.message });

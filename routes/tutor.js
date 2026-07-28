@@ -6,6 +6,7 @@ const logger = require("../services/analytics/requestLogger");
 const estimator = require("../services/analytics/tokenEstimator");
 const { estimateTextCostUsd } = require("../services/analytics/costService");
 const { recordAiEvent } = require("../services/analytics/metricsService");
+const enforceAiQuota = require("../middleware/enforceAiQuota");
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 const TUTOR_SYSTEM = `You are Readify Tutor — a friendly, expert study assistant for Nigerian students.
@@ -65,7 +66,7 @@ WHEN TO DRAW:
 // Body: { messages: [{role, content}], context?: string, illustration_mode?: bool }
 // Returns: { reply: string }
 // ────────────────────────────────────────────────────────────────────────────
-router.post("/tutor/chat", async (req, res) => {
+router.post("/tutor/chat", enforceAiQuota("tutor"), async (req, res) => {
     const track = logger.start("tutor", req);
     const model = "gpt-4o-mini";
     const {
@@ -129,6 +130,7 @@ router.post("/tutor/chat", async (req, res) => {
         return res.json({ reply });
 
     } catch (err) {
+        if (req.releaseAiUsage) await req.releaseAiUsage();
         await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: false, error: err.message, estimatedCostUsd: 0 })).catch(() => {});
         console.error("[tutor/chat]", track.requestId, err.message);
         return res.status(500).json({ error: "Tutor is unavailable right now. Please try again." });

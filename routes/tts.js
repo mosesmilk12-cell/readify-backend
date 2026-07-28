@@ -25,6 +25,7 @@ const logger = require("../services/analytics/requestLogger");
 const { estimateTtsCostUsd, estimateTextCostUsd } = require("../services/analytics/costService");
 const estimator = require("../services/analytics/tokenEstimator");
 const { recordAiEvent } = require("../services/analytics/metricsService");
+const enforceAiQuota = require("../middleware/enforceAiQuota");
 
 const VOICE_STYLES = {
   default:   { voice: "alloy",   instructions: "Speak clearly and naturally like a helpful study tutor." },
@@ -73,7 +74,7 @@ async function cleanTranscript(text, title) {
   return cleaned.join("\n\n");
 }
 
-router.post("/tts", async (req, res) => {
+router.post("/tts", enforceAiQuota("voice"), async (req, res) => {
   const track = logger.start("tts", req);
   const model = "tts-1";
   try {
@@ -118,6 +119,7 @@ router.post("/tts", async (req, res) => {
     return res.send(buffer);
 
   } catch (err) {
+    if (req.releaseAiUsage) await req.releaseAiUsage();
     await recordAiEvent(logger.finish(track, { uid: req.user?.uid, model, cached: false, success: false, error: err.message, estimatedCostUsd: 0 })).catch(() => {});
     console.error("[TTS]", track.requestId, err.message);
     return res.status(500).json({ error: "AI voice generation failed: " + err.message });
