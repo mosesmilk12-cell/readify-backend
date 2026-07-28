@@ -6,6 +6,8 @@ const { exec } = require("child_process");
 const requireAuth = require("./middleware/requireAuth");
 const requestTracking = require("./middleware/requestTracking");
 const usageRoutes     = require("./routes/usage");
+const adminRoutes     = require("./routes/admin");
+const enforceBudget   = require("./middleware/enforceBudget");
 
 // ── Startup environment check ──────────────────────────────────────
 // Logs clearly in Render so you can see immediately what's missing
@@ -68,12 +70,18 @@ app.use("/api", subscriptionRoutes);
 const protectedApi = express.Router();
 protectedApi.use(requireAuth);
 protectedApi.use(requestTracking);
-protectedApi.use(summarizeRoutes);
-protectedApi.use(ttsRoutes);
-protectedApi.use(quizRoutes);
+
+// Routes that spend money at OpenAI sit behind the budget guard.
+protectedApi.use(enforceBudget, summarizeRoutes);
+protectedApi.use(enforceBudget, ttsRoutes);
+protectedApi.use(enforceBudget, quizRoutes);
+protectedApi.use(enforceBudget, tutorRoutes);
+
+// Document conversion is local (LibreOffice), and the usage/admin endpoints are
+// read-only — none of them cost anything, so the ceiling must not block them.
 protectedApi.use(convertRoutes);
-protectedApi.use(tutorRoutes);
 protectedApi.use(usageRoutes);
+protectedApi.use(adminRoutes);
 app.use("/api", protectedApi);
 
 app.get("/api/check-libreoffice", (req, res) => {
