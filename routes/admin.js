@@ -228,4 +228,152 @@ router.get("/admin/events/recent", async (req, res) => {
   }
 });
 
+// ── GET /api/admin/health ──────────────────────────────────────────────────
+// Backend health for the Console's status panel.
+router.get("/admin/health", async (req, res) => {
+  const checks = {};
+
+  // Firebase / Firestore — do a real read so we test the connection, not config
+  try {
+    await db().collection("aiMetricsDaily").limit(1).get();
+    checks.firestore = { ok: true };
+  } catch (err) {
+    checks.firestore = { ok: false, error: err.message };
+  }
+
+  // Redis (optional — absent is "disabled", not "broken")
+  try {
+    const { isConnected } = require("../config/redis");
+    const configured = Boolean(process.env.REDIS_URL);
+    checks.redis = configured
+      ? { ok: isConnected === true, configured: true }
+      : { ok: true, configured: false, note: "Not configured — caching and queueing disabled." };
+  } catch (err) {
+    checks.redis = { ok: false, error: err.message };
+  }
+
+  // Job queue
+  try {
+    const { aiQueue } = require("../config/queue");
+    checks.queue = aiQueue
+      ? { ok: true, enabled: true }
+      : { ok: true, enabled: false, note: "Queue disabled — AI runs inline." };
+  } catch (err) {
+    checks.queue = { ok: false, error: err.message };
+  }
+
+  checks.openai   = { ok: Boolean(process.env.OPENAI_API_KEY) };
+  checks.paystack = { ok: Boolean(process.env.PAYSTACK_SECRET_KEY) };
+
+  const healthy = Object.values(checks).every(check => check.ok !== false);
+
+  return res.status(healthy ? 200 : 503).json({
+    success: true,
+    healthy,
+    checks,
+    runtime: {
+      uptimeSeconds: Math.round(process.uptime()),
+      memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      nodeVersion: process.version,
+      flags: {
+        usageTracking:     process.env.AI_USAGE_TRACKING_ENABLED !== "false",
+        quotaEnforcement:  /^(1|true|yes|on)$/i.test(process.env.AI_SERVER_QUOTAS_ENABLED || ""),
+        budgetEnforcement: /^(1|true|yes|on)$/i.test(process.env.AI_BUDGET_ENFORCEMENT_ENABLED || ""),
+      },
+    },
+    checkedAt: new Date().toISOString(),
+  });
+});
+
+// ── GET /api/admin/users?search=&limit= ────────────────────────────────────
+// User Management list. Searches by email prefix, or returns the most
+// recently updated accounts when no search term is given.
+router.get("/admin/users", async (req, res) => {
+  try {
+    const limit  = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+    const search = String(req.query.search || "").trim().toLowerCase();
+
+    let query = db().collection("users");
+
+    if (search) {
+      // Firestore prefix search on the indexed email field
+      query = query.orderBy("email")
+                   .startAt(search)
+                   .endAt(search + "\uf8ff")
+                   .limit(limit);
+    } else {
+      query = query.orderBy("subscriptionUpdatedAt", "desc").limit(limit);
+    }
+
+    const snap = await query.get();
+    const users = snap.docs.map(doc => {
+      const d = doc.data();
+      return {
+        uid:        doc.id,
+        email:      d.email || null,
+        name:       d.name || d.username || null,
+        tier:       d.subscriptionTier || "FREE",
+        plan:       d.subscriptionPlan || null,
+        expiresAt:  d.premiumExpiryMs || null,
+        trialUsed:  d.freeTrialUsed === true,
+        updatedAt:  d.subscriptionUpdatedAt || null,
+      };
+    });
+
+    return res.json({ success: true, count: users.length, users });
+  } catch (err) {
+    console.error("[admin/users]", err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Could not load users. A Firestore index on 'email' or " +
+             "'subscriptionUpdatedAt' may be required.",
+    });
+  }
+});
+
+// ── POST /api/admin/users/:uid/tier   { tier, days } ───────────────────────
+// Manual grant / revoke. Every change is written to adminActions for audit.
+router.post("/admin/users/:uid/tier", async (req, res) => {
+  try {
+    const uid  = String(req.params.uid || "").trim();
+    const tier = String(req.body.tier || "").trim().toUpperCase();
+    const days = Number(req.body.days || 0);
+
+    const allowed = ["FREE", "ONLINE", "LITE_YEARLY", "PREMIUM"];
+    if (!uid)                   return res.status(400).json({ success: false, error: "Missing uid." });
+    if (!allowed.includes(tier)) return res.status(400).json({ success: false, error: `Tier must be one of ${allowed.join(", ")}.` });
+
+    const expiryMs = days > 0 ? Date.now() + days * 86_400_000 : null;
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    const update = {
+      subscriptionTier:      tier,
+      subscriptionPlan:      tier === "FREE" ? null : (req.body.plan || "admin_grant"),
+      subscriptionUpdatedAt: now,
+      premiumExpiryMs:       expiryMs || 0,
+    };
+    if (expiryMs) update.subscriptionExpiresAt = new Date(expiryMs);
+
+    await db().collection("users").doc(uid).set(update, { merge: true });
+
+    // Audit trail — who changed what, and when
+    await db().collection("adminActions").add({
+      action:    "SET_TIER",
+      targetUid: uid,
+      tier,
+      days:      days || null,
+      byUid:     req.user.uid,
+      byEmail:   req.user.email || null,
+      at:        now,
+    });
+
+    console.log(`[admin] ${req.user.email} set ${uid} → ${tier}${days ? ` (${days}d)` : ""}`);
+
+    return res.json({ success: true, uid, tier, expiresAt: expiryMs });
+  } catch (err) {
+    console.error("[admin/users/tier]", err.message);
+    return res.status(500).json({ success: false, error: "Could not update the user." });
+  }
+});
+
 module.exports = router;
