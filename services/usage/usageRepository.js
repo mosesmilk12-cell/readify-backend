@@ -75,4 +75,42 @@ async function getDailyUsage({ uid, dateKey = getDateKey() }) {
   return snapshot.exists ? snapshot.data() : { uid, dateKey };
 }
 
-module.exports = { consume, release, getDailyUsage, getDateKey };
+/**
+ * Credits rewarded-ad bonus uses to the account.
+ *
+ * Server-side so the bonus cannot be farmed by clearing app data — the count
+ * belongs to the account, not the device. `maxPerDay` caps how many bonuses a
+ * user can earn in a day regardless of how many ads they manage to watch.
+ */
+async function grantBonus({ uid, feature, units = 1, maxPerDay = 5 }) {
+  const { FEATURE_RULES } = require("./quotaRules");
+  const rule = FEATURE_RULES[feature];
+  if (!rule) throw new Error(`Unknown feature: ${feature}`);
+
+  const admin = require("../../config/firebase");
+  const db = admin.firestore();
+  const ref = getUsageRef(uid);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.exists ? snap.data() : {};
+
+    const current = Math.max(0, Number(data[rule.bonusField]) || 0);
+    const granted = Math.min(units, Math.max(0, maxPerDay - current));
+
+    if (granted > 0) {
+      tx.set(ref, {
+        [rule.bonusField]: current + granted,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    return {
+      granted,
+      totalBonus: current + granted,
+      atLimit: current + granted >= maxPerDay,
+    };
+  });
+}
+
+module.exports = { consume, release, getDailyUsage, getDateKey, grantBonus };

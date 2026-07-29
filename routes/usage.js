@@ -49,4 +49,49 @@ router.get("/ai-usage", async (req, res) => {
     }
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// POST /api/ai-usage/bonus   { feature }
+// Credits one bonus use after a rewarded ad completes.
+//
+// Recorded against the account rather than the device, so the reward cannot be
+// re-earned by clearing app data. Capped per day server-side.
+// ────────────────────────────────────────────────────────────────────────────
+router.post("/ai-usage/bonus", async (req, res) => {
+    try {
+        const feature = String(req.body.feature || "").trim();
+        const { FEATURE_RULES } = require("../services/usage/quotaRules");
+
+        if (!FEATURE_RULES[feature]) {
+            return res.status(400).json({
+                success: false,
+                error: `Unknown feature. Expected one of: ${Object.keys(FEATURE_RULES).join(", ")}.`,
+            });
+        }
+
+        // Premium plans have nothing to top up.
+        if (req.isPremium === true) {
+            return res.json({ success: true, granted: 0, unlimited: true });
+        }
+
+        const maxPerDay = Number(process.env.AI_BONUS_MAX_PER_DAY || 5);
+        const { grantBonus } = require("../services/usage/usageRepository");
+        const result = await grantBonus({ uid: req.user.uid, feature, units: 1, maxPerDay });
+
+        return res.json({
+            success:    true,
+            feature,
+            granted:    result.granted,
+            totalBonus: result.totalBonus,
+            atLimit:    result.atLimit,
+            message:    result.granted > 0
+                    ? "Bonus use added."
+                    : "You have already claimed today's bonus uses.",
+        });
+
+    } catch (err) {
+        console.error("[ai-usage/bonus]", err.message);
+        return res.status(500).json({ success: false, error: "Could not add the bonus use." });
+    }
+});
+
 module.exports = router;
